@@ -19,6 +19,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private readonly Stack<ResolutionBatch> _undo = new();
     private readonly Stack<ResolutionBatch> _redo = new();
     private readonly HashSet<string> _selectedConflictIds = new(StringComparer.Ordinal);
+    private readonly Func<IReadOnlyList<string>, bool> _confirmStructuralChanges;
     private MergeDiagnosticLogger? _diagnosticLogger;
     private PreparedMergeSession? _session;
     private SheetTabViewModel? _selectedSheet;
@@ -42,8 +43,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private bool _settingSelectionFromGrid;
     private int _automaticEditNavigationIndex = -1;
 
-    public MainWindowViewModel()
+    public MainWindowViewModel(Func<IReadOnlyList<string>, bool>? confirmStructuralChanges = null)
     {
+        _confirmStructuralChanges = confirmStructuralChanges ?? ConfirmStructuralChanges;
         RecalculationModes =
         [
             new RecalculationModeOption("auto", "自动（推荐）"),
@@ -224,6 +226,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             NotifySessionChanged();
             var analysisStatus = session.MetadataChangeCount > 0
                 ? $"检测到 {session.MetadataChangeCount} 处 Luban 元数据变更，请逐项确认后保存"
+                : session.RequiresStructuralChangeConfirmation
+                ? $"检测到 {session.StructuralChanges.Count} 项列结构变化，保存前需要二次确认"
                 : session.Conflicts.Count == 0
                 ? $"分析完成：{session.Sheets.Count} 个工作表，{session.AutomaticEditCount} 项自动编辑，可直接保存"
                 : $"分析完成：{session.Sheets.Count} 个工作表，{session.Conflicts.Count} 个冲突待处理";
@@ -251,6 +255,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     {
         if (_session is null)
             return;
+        if (_session.RequiresStructuralChangeConfirmation &&
+            !_confirmStructuralChanges(_session.StructuralChanges))
+        {
+            StatusText = "已取消保存，MERGED 未被修改";
+            return;
+        }
         IsBusy = true;
         StatusText = "正在原子保存并验证工作簿...";
         try
@@ -598,6 +608,25 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             : $"{exception.Message}{Environment.NewLine}{Environment.NewLine}Git 详细原因：{detail}";
         StatusText = message;
         MessageBox.Show(message, "Luban Excel 合并", MessageBoxButton.OK, MessageBoxImage.Error);
+    }
+
+    private static bool ConfirmStructuralChanges(IReadOnlyList<string> changes)
+    {
+        var displayedChanges = changes.Take(12).Select(change => $"• {change}").ToList();
+        if (changes.Count > displayedChanges.Count)
+            displayedChanges.Add($"• 另有 {changes.Count - displayedChanges.Count} 项未展开");
+        var message =
+            "本次保存将删除、修改或移动既有字段列。列结构变化可能影响公式引用和下游 Luban 配置。" +
+            Environment.NewLine + Environment.NewLine +
+            string.Join(Environment.NewLine, displayedChanges) +
+            Environment.NewLine + Environment.NewLine +
+            "是否确认继续保存并执行后续校验与 Git staging？";
+        return MessageBox.Show(
+            message,
+            "确认保存列结构变更",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No) == MessageBoxResult.Yes;
     }
 
     private static TException? FindInnerException<TException>(Exception exception)

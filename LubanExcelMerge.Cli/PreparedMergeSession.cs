@@ -78,6 +78,7 @@ public sealed class ResolvableMergeConflict
 public sealed class PreparedSheetMerge
 {
     private IReadOnlyList<MergeGridLocation>? _automaticEditLocations;
+    private readonly Func<IReadOnlyList<WorkbookEdit>>? _finalEditFactory;
 
     internal PreparedSheetMerge(
         string sheetName,
@@ -88,7 +89,9 @@ public sealed class PreparedSheetMerge
         int changedCells,
         int addedRecords,
         int deletedRecords,
-        int metadataChangeCount)
+        int metadataChangeCount,
+        IReadOnlyList<string>? structuralChanges = null,
+        Func<IReadOnlyList<WorkbookEdit>>? finalEditFactory = null)
     {
         SheetName = sheetName;
         KeyName = keyName;
@@ -99,6 +102,8 @@ public sealed class PreparedSheetMerge
         AddedRecords = addedRecords;
         DeletedRecords = deletedRecords;
         MetadataChangeCount = metadataChangeCount;
+        StructuralChanges = structuralChanges ?? Array.Empty<string>();
+        _finalEditFactory = finalEditFactory;
     }
 
     public string SheetName { get; }
@@ -109,6 +114,8 @@ public sealed class PreparedSheetMerge
     public int AddedRecords { get; }
     public int DeletedRecords { get; }
     public int MetadataChangeCount { get; }
+    public IReadOnlyList<string> StructuralChanges { get; }
+    public bool RequiresStructuralChangeConfirmation => StructuralChanges.Count > 0;
     public int AutomaticEditCount => AutomaticEdits.Count;
     public IReadOnlyList<MergeGridLocation> AutomaticEditLocations
     {
@@ -134,6 +141,7 @@ public sealed class PreparedSheetMerge
     internal IReadOnlyList<WorkbookEdit> AutomaticEdits { get; }
 
     internal IEnumerable<WorkbookEdit> GetSelectedEdits() =>
+        _finalEditFactory?.Invoke() ??
         AutomaticEdits.Concat(Conflicts.SelectMany(conflict => conflict.GetSelectedEdits()));
 }
 
@@ -213,6 +221,11 @@ public sealed class PreparedMergeSession
     public int DeletedRecords => Sheets.Sum(sheet => sheet.DeletedRecords);
     public int AutomaticEditCount => Sheets.Sum(sheet => sheet.AutomaticEditCount);
     public int MetadataChangeCount => Sheets.Sum(sheet => sheet.MetadataChangeCount);
+    public IReadOnlyList<string> StructuralChanges => Sheets
+        .SelectMany(sheet => sheet.StructuralChanges.Select(change => $"{sheet.SheetName}：{change}"))
+        .ToArray();
+    public bool RequiresStructuralChangeConfirmation =>
+        Sheets.Any(sheet => sheet.RequiresStructuralChangeConfirmation);
     public int RemainingConflicts => Conflicts.Count(conflict => !conflict.IsResolved);
     public bool CanSave => RemainingConflicts == 0;
 

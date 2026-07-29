@@ -13,6 +13,8 @@
 - 多 Sheet 切换与整工作簿保存门禁
 - 新增行、删除行、修改和删除/修改冲突处理
 - LOCAL/REMOTE 任意位置新增 Luban 字段列及字段并集合并
+- 既有字段列删除、重命名、类型修改和位置移动的三方合并与冲突选择
+- 危险列结构变化保存前二次确认
 - Git/Fork resolved 与 staged 集成
 - Git LFS 输入解析
 - WPS 优先、Microsoft Excel 回退的公式重算
@@ -46,7 +48,7 @@ dotnet run --project LubanExcelMerge.OpenXml.Tests -c Release
 dotnet run --project LubanExcelMerge.Cli.Tests -c Release
 ```
 
-当前基线为 `98` 项测试。
+当前基线为 `105` 项测试。
 
 ## 发布
 
@@ -68,5 +70,6 @@ dotnet publish LubanExcelMerge.Gui/LubanExcelMerge.Gui.csproj `
 
 - 输入必须为 `.xlsx`。
 - 三方工作簿的 Sheet 名称、数量和顺序必须一致。
-- 已有字段的删除、重命名、重排或类型修改仍会被阻止。
-- REMOTE 独有公式字段需要移动列位时会被阻止，以避免公式引用错列。
+- 不支持插入或删除 Luban 元数据行，也不支持改变数据起始行。
+- 删除唯一可用的主键字段后，如果无法建立可靠的行身份，主键校验会阻止合并。
+- 列移动会保留各分支已有的公式文本并触发重算，但不会猜测或重写公式引用；保存前应重点复核公式字段。

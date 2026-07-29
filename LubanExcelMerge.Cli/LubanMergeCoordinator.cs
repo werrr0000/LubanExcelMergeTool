@@ -227,7 +227,7 @@ public sealed class LubanMergeCoordinator
         try
         {
             var schemas = ParseSchemas(sheets.Base, sheets.Local, sheets.Remote);
-            var schemaMerge = CreateSchemaMergePlan(schemas, sheets.Local, sheets.Remote);
+            var schemaMerge = CreateSchemaMergePlan(schemas, sheets);
             var metadataPlan = CreateMetadataPlan(
                 sheets,
                 schemas,
@@ -241,13 +241,16 @@ public sealed class LubanMergeCoordinator
             };
             var recordSources = new[]
             {
-                CreateRecordSources(sheets.Base, schemas.Base, basePath, dataRows[0]),
-                CreateRecordSources(sheets.Local, schemas.Local, localPath, dataRows[1]),
-                CreateRecordSources(sheets.Remote, schemas.Remote, remotePath, dataRows[2])
+                CreateRecordSources(sheets.Base, schemaMerge, SchemaSide.Base, basePath, dataRows[0]),
+                CreateRecordSources(sheets.Local, schemaMerge, SchemaSide.Local, localPath, dataRows[1]),
+                CreateRecordSources(sheets.Remote, schemaMerge, SchemaSide.Remote, remotePath, dataRows[2])
             };
-            var keyCandidates = configuredKey is null
-                ? logicalTable.DeclaredIndexes
-                : new[] { new RecordKeyDefinition(configuredKey) };
+            var keyCandidates = (configuredKey is null
+                    ? logicalTable.DeclaredIndexes
+                    : new[] { new RecordKeyDefinition(configuredKey) })
+                .Select(candidate => new RecordKeyDefinition(candidate.FieldNames
+                    .Select(fieldName => MapFieldName(schemaMerge, fieldName))))
+                .ToArray();
             var keySelection = PrimaryKeySelector.Select(
                 schemaMerge.TargetSchema,
                 keyCandidates,
@@ -267,7 +270,14 @@ public sealed class LubanMergeCoordinator
             }
 
             var keyDefinition = keySelection.Selected;
-            ValidateIgnoredFields(schemaMerge.TargetSchema, keyDefinition, ignoredFields, options.LoadedConfigPath);
+            var alignedIgnoredFields = ignoredFields
+                .Select(fieldName => MapFieldName(schemaMerge, fieldName))
+                .ToArray();
+            ValidateIgnoredFields(
+                schemaMerge.TargetSchema,
+                keyDefinition,
+                alignedIgnoredFields,
+                options.LoadedConfigPath);
             if (options.ValidateLogicalTableUniqueness)
             {
                 ValidateLogicalTableUniqueness(
@@ -280,13 +290,17 @@ public sealed class LubanMergeCoordinator
                     options.RepositoryRoot,
                     options.InactivePaths);
             }
-            var ignoredFieldSet = ignoredFields.ToHashSet(StringComparer.Ordinal);
+            var ignoredFieldSet = alignedIgnoredFields.ToHashSet(StringComparer.Ordinal);
             var datasets = new[]
             {
-                CreateDataset(schemas.Base, schemaMerge, keyDefinition, ignoredFieldSet, dataRows[0]),
-                CreateDataset(schemas.Local, schemaMerge, keyDefinition, ignoredFieldSet, dataRows[1]),
-                CreateDataset(schemas.Remote, schemaMerge, keyDefinition, ignoredFieldSet, dataRows[2])
+                CreateDataset(schemaMerge, SchemaSide.Base, keyDefinition, ignoredFieldSet, dataRows[0]),
+                CreateDataset(schemaMerge, SchemaSide.Local, keyDefinition, ignoredFieldSet, dataRows[1]),
+                CreateDataset(schemaMerge, SchemaSide.Remote, keyDefinition, ignoredFieldSet, dataRows[2])
             };
+            datasets[1] = NormalizeStructurallyDeletedFieldData(
+                datasets[0], datasets[1], schemaMerge, SchemaSide.Local);
+            datasets[2] = NormalizeStructurallyDeletedFieldData(
+                datasets[0], datasets[2], schemaMerge, SchemaSide.Remote);
             var plan = CreateEdits(
                 datasets[0],
                 datasets[1],
@@ -295,7 +309,10 @@ public sealed class LubanMergeCoordinator
                 keyDefinition,
                 sheets.Local.Name,
                 ignoredFieldSet);
-            var conflicts = metadataPlan.Conflicts.Concat(plan.Conflicts).ToArray();
+            var conflicts = schemaMerge.Conflicts
+                .Concat(metadataPlan.Conflicts)
+                .Concat(plan.Conflicts)
+                .ToArray();
             var automaticEdits = metadataPlan.Edits.Concat(plan.Edits).ToArray();
             var comparison = CreateComparison(
                 sheets,
@@ -315,7 +332,13 @@ public sealed class LubanMergeCoordinator
                 plan.ChangedCells,
                 plan.AddedRecords,
                 plan.DeletedRecords,
-                metadataPlan.Conflicts.Count);
+                schemaMerge.Conflicts.Count + metadataPlan.Conflicts.Count,
+                schemaMerge.StructuralChanges,
+                () => CreateFinalEdits(
+                    sheets,
+                    schemaMerge,
+                    automaticEdits,
+                    conflicts));
         }
         catch (MergeInputException exception)
         {
@@ -609,8 +632,7 @@ public sealed class LubanMergeCoordinator
 
     private static SchemaMergePlan CreateSchemaMergePlan(
         (LubanSchema Base, LubanSchema Local, LubanSchema Remote) schemas,
-        SheetSnapshot localSheet,
-        SheetSnapshot remoteSheet)
+        (SheetSnapshot Base, SheetSnapshot Local, SheetSnapshot Remote) sheets)
     {
         if (schemas.Base.IsRestricted || schemas.Local.IsRestricted || schemas.Remote.IsRestricted)
         {
@@ -633,67 +655,88 @@ public sealed class LubanMergeCoordinator
                 "当前版本支持追加字段列，但仍不支持插入或删除元数据行。");
         }
 
-        var baseFields = schemas.Base.Fields.ToDictionary(field => field.Name, StringComparer.Ordinal);
-        var localFields = schemas.Local.Fields.ToDictionary(field => field.Name, StringComparer.Ordinal);
-        var remoteFields = schemas.Remote.Fields.ToDictionary(field => field.Name, StringComparer.Ordinal);
-        foreach (var baseField in schemas.Base.Fields)
-        {
-            ValidateExistingField(baseField, localFields.GetValueOrDefault(baseField.Name), "LOCAL");
-            ValidateExistingField(baseField, remoteFields.GetValueOrDefault(baseField.Name), "REMOTE");
-        }
-        var baseFieldOrder = schemas.Base.Fields.Select(field => field.Name).ToArray();
-        foreach (var (label, fields) in new[] { ("LOCAL", schemas.Local.Fields), ("REMOTE", schemas.Remote.Fields) })
-        {
-            var existingFieldOrder = fields
-                .Where(field => baseFields.ContainsKey(field.Name))
-                .Select(field => field.Name)
-                .ToArray();
-            if (!baseFieldOrder.SequenceEqual(existingFieldOrder, StringComparer.Ordinal))
-            {
-                throw new UnsafeWorkbookException(
-                    $"{label} 调整了既有字段的相对顺序；当前版本支持新增字段列，但不自动合并既有字段重排。");
-            }
-        }
-
-        var occupiedLocalColumns = localSheet.Rows
+        var drafts = AlignFields(schemas);
+        var occupiedLocalColumns = sheets.Local.Rows
             .SelectMany(row => row.Cells)
             .Select(cell => cell.ColumnIndex)
             .ToHashSet();
         var usedTargetColumns = schemas.Local.Fields.Select(field => field.ColumnIndex).ToHashSet();
         var nextTargetColumn = occupiedLocalColumns.DefaultIfEmpty(-1).Max() + 1;
         var alignments = new List<AlignedField>();
+        var structuralConflicts = new List<ResolvableMergeConflict>();
+        var structuralChanges = new List<string>();
 
-        foreach (var localField in schemas.Local.Fields)
+        foreach (var draft in drafts)
         {
-            baseFields.TryGetValue(localField.Name, out var baseField);
-            remoteFields.TryGetValue(localField.Name, out var remoteField);
-            alignments.Add(new AlignedField(localField, baseField, localField, remoteField));
-        }
-
-        foreach (var remoteField in schemas.Remote.Fields.Where(field => !localFields.ContainsKey(field.Name)))
-        {
-            var targetColumn = remoteField.ColumnIndex;
+            var analysisSource = draft.Local ?? draft.Base ?? draft.Remote
+                ?? throw new InvalidOperationException("字段对齐缺少三方来源。");
+            var targetColumn = draft.Local?.ColumnIndex ?? draft.Base?.ColumnIndex ?? draft.Remote!.ColumnIndex;
             if (occupiedLocalColumns.Contains(targetColumn) || usedTargetColumns.Contains(targetColumn))
+            {
+                if (draft.Local is null)
+                {
+                    while (occupiedLocalColumns.Contains(nextTargetColumn) || usedTargetColumns.Contains(nextTargetColumn))
+                        nextTargetColumn++;
+                    targetColumn = nextTargetColumn++;
+                }
+            }
+            while (usedTargetColumns.Contains(targetColumn) && draft.Local?.ColumnIndex != targetColumn)
             {
                 while (occupiedLocalColumns.Contains(nextTargetColumn) || usedTargetColumns.Contains(nextTargetColumn))
                     nextTargetColumn++;
                 targetColumn = nextTargetColumn++;
             }
-
-            if (targetColumn != remoteField.ColumnIndex && remoteSheet.Rows.Any(row =>
-                    GetCell(row, remoteField.ColumnIndex)?.Payload.Kind == CellValueKind.Formula))
+            usedTargetColumns.Add(targetColumn);
+            var targetField = analysisSource with { ColumnIndex = targetColumn };
+            var decision = MergeFieldStructure(draft.Base, draft.Local, draft.Remote);
+            ResolvableMergeConflict? structuralConflict = null;
+            if (decision.IsConflict)
             {
-                throw new UnsafeWorkbookException(
-                    $"REMOTE 新增公式字段 {remoteField.Name} 需要从 {MergeComparison.ColumnName(remoteField.ColumnIndex)} 列" +
-                    $"移动到 {MergeComparison.ColumnName(targetColumn)} 列；为避免公式引用失真，请先将该字段追加到空闲列后再合并。");
+                var address = CellReference.Create(schemas.Base.PrimaryVariableRowNumber, targetColumn);
+                var conflictKind = draft.Base is not null &&
+                                   (draft.Local is null || draft.Remote is null)
+                    ? MergeConflictKind.DeleteModify
+                    : MergeConflictKind.MetadataChanged;
+                var conflict = new MergeConflict(
+                    conflictKind,
+                    $"字段 {draft.DisplayName}",
+                    address,
+                    $"字段 {draft.DisplayName} 的列结构在 LOCAL 和 REMOTE 中发生不兼容变化，请选择保留 BASE、LOCAL 或 REMOTE。");
+                structuralConflict = CreateResolution(
+                    structuralConflicts.Count,
+                    conflict,
+                    schemas.Base.PrimaryVariableRowNumber,
+                    FormatField(draft.Base),
+                    FormatField(draft.Local),
+                    FormatField(draft.Remote),
+                    Array.Empty<WorkbookEdit>(),
+                    Array.Empty<WorkbookEdit>(),
+                    Array.Empty<WorkbookEdit>());
+                structuralConflicts.Add(structuralConflict);
             }
 
-            var targetField = remoteField with { ColumnIndex = targetColumn };
-            usedTargetColumns.Add(targetColumn);
-            alignments.Add(new AlignedField(targetField, null, null, remoteField));
+            alignments.Add(new AlignedField(
+                draft.Identity,
+                targetField,
+                draft.Base,
+                draft.Local,
+                draft.Remote,
+                decision,
+                structuralConflict));
+            AddStructuralChangeSummaries(structuralChanges, draft);
         }
 
         alignments.Sort((left, right) => left.Target.ColumnIndex.CompareTo(right.Target.ColumnIndex));
+        var duplicateTargetNames = alignments
+            .GroupBy(alignment => alignment.Target.Name, StringComparer.Ordinal)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToArray();
+        if (duplicateTargetNames.Length > 0)
+        {
+            throw new UnsafeWorkbookException(
+                "列结构合并后存在无法唯一对齐的字段名：" + string.Join("、", duplicateTargetNames) + "。");
+        }
         var targetSchema = new LubanSchema(
             alignments.Select(alignment => alignment.Target).ToArray(),
             schemas.Local.MetadataRows,
@@ -703,7 +746,7 @@ public sealed class LubanMergeCoordinator
             false,
             Array.Empty<string>());
         var maximumTargetColumn = alignments.Select(alignment => alignment.Target.ColumnIndex).DefaultIfEmpty(-1).Max();
-        var maximumRawColumn = localSheet.Rows
+        var maximumRawColumn = sheets.Local.Rows
             .SelectMany(row => row.Cells)
             .Select(cell => cell.ColumnIndex)
             .DefaultIfEmpty(-1)
@@ -711,20 +754,132 @@ public sealed class LubanMergeCoordinator
         return new SchemaMergePlan(
             targetSchema,
             alignments,
-            Math.Max(maximumTargetColumn, maximumRawColumn) + 1);
+            Math.Max(maximumTargetColumn, maximumRawColumn) + 1,
+            structuralConflicts,
+            structuralChanges.Distinct(StringComparer.Ordinal).ToArray(),
+            schemas);
     }
 
-    private static void ValidateExistingField(LubanField expected, LubanField? actual, string side)
+    private static IReadOnlyList<FieldAlignmentDraft> AlignFields(
+        (LubanSchema Base, LubanSchema Local, LubanSchema Remote) schemas)
     {
-        if (actual is null)
+        var localRemaining = schemas.Local.Fields.ToHashSet();
+        var remoteRemaining = schemas.Remote.Fields.ToHashSet();
+        var drafts = schemas.Base.Fields
+            .Select(field => new MutableFieldAlignment(
+                $"base:{field.Name}",
+                field.Name,
+                field,
+                TakeByName(localRemaining, field.Name),
+                TakeByName(remoteRemaining, field.Name)))
+            .ToArray();
+
+        foreach (var draft in drafts.Where(draft => draft.Local is null))
+            draft.Local = TakeByColumn(localRemaining, draft.Base!.ColumnIndex);
+        foreach (var draft in drafts.Where(draft => draft.Remote is null))
+            draft.Remote = TakeByColumn(remoteRemaining, draft.Base!.ColumnIndex);
+
+        var result = drafts.Select(draft => draft.ToImmutable()).ToList();
+        foreach (var localField in localRemaining.OrderBy(field => field.ColumnIndex).ToArray())
         {
-            throw new UnsafeWorkbookException(
-                $"{side} 删除或重命名了既有字段 {expected.Name}；当前版本只支持新增字段列。");
+            localRemaining.Remove(localField);
+            var remoteField = TakeByName(remoteRemaining, localField.Name);
+            result.Add(new FieldAlignmentDraft(
+                $"added:{localField.Name}:{localField.ColumnIndex}",
+                localField.Name,
+                null,
+                localField,
+                remoteField));
         }
-        if (!string.Equals(expected.TypeName, actual.TypeName, StringComparison.Ordinal))
+        foreach (var remoteField in remoteRemaining.OrderBy(field => field.ColumnIndex))
         {
-            throw new UnsafeWorkbookException(
-                $"{side} 修改了既有字段 {expected.Name} 的类型；当前版本只支持新增字段列。");
+            result.Add(new FieldAlignmentDraft(
+                $"added:{remoteField.Name}:{remoteField.ColumnIndex}:remote",
+                remoteField.Name,
+                null,
+                null,
+                remoteField));
+        }
+        return result;
+    }
+
+    private static LubanField? TakeByName(ISet<LubanField> fields, string name) =>
+        TakeField(fields, field => string.Equals(field.Name, name, StringComparison.Ordinal));
+
+    private static LubanField? TakeByColumn(ISet<LubanField> fields, int columnIndex) =>
+        TakeField(fields, field => field.ColumnIndex == columnIndex);
+
+    private static LubanField? TakeField(ISet<LubanField> fields, Func<LubanField, bool> predicate)
+    {
+        var match = fields.FirstOrDefault(predicate);
+        if (match is not null)
+            fields.Remove(match);
+        return match;
+    }
+
+    private static FieldStructureDecision MergeFieldStructure(
+        LubanField? @base,
+        LubanField? local,
+        LubanField? remote)
+    {
+        if (@base is null)
+        {
+            if (local is null)
+                return new FieldStructureDecision(remote, MergeChoice.Remote, false);
+            if (remote is null)
+                return new FieldStructureDecision(local, MergeChoice.Local, false);
+            return FieldEquals(local, remote)
+                ? new FieldStructureDecision(local, MergeChoice.Local, false)
+                : new FieldStructureDecision(null, MergeChoice.Local, true);
+        }
+
+        if (local is null && remote is null)
+            return new FieldStructureDecision(null, MergeChoice.Local, false);
+        if (local is null)
+            return FieldEquals(@base, remote)
+                ? new FieldStructureDecision(null, MergeChoice.Local, false)
+                : new FieldStructureDecision(null, MergeChoice.Local, true);
+        if (remote is null)
+            return FieldEquals(@base, local)
+                ? new FieldStructureDecision(null, MergeChoice.Remote, false)
+                : new FieldStructureDecision(null, MergeChoice.Local, true);
+        if (FieldEquals(local, remote) || FieldEquals(@base, remote))
+            return new FieldStructureDecision(local, MergeChoice.Local, false);
+        if (FieldEquals(@base, local))
+            return new FieldStructureDecision(remote, MergeChoice.Remote, false);
+        return new FieldStructureDecision(null, MergeChoice.Local, true);
+    }
+
+    private static bool FieldEquals(LubanField? left, LubanField? right) =>
+        left == right;
+
+    private static string FormatField(LubanField? field) => field is null
+        ? "<已删除>"
+        : $"{field.Name} : {field.TypeName} @ {MergeComparison.ColumnName(field.ColumnIndex)}列";
+
+    private static void AddStructuralChangeSummaries(
+        ICollection<string> summaries,
+        FieldAlignmentDraft draft)
+    {
+        if (draft.Base is null)
+            return;
+        foreach (var (side, field) in new[] { ("LOCAL", draft.Local), ("REMOTE", draft.Remote) })
+        {
+            if (field is null)
+            {
+                summaries.Add($"{side} 删除了既有字段 {draft.Base.Name}");
+                continue;
+            }
+            if (!string.Equals(field.Name, draft.Base.Name, StringComparison.Ordinal))
+                summaries.Add($"{side} 将字段 {draft.Base.Name} 重命名为 {field.Name}");
+            if (!string.Equals(field.TypeName, draft.Base.TypeName, StringComparison.Ordinal))
+                summaries.Add($"{side} 修改了字段 {draft.Base.Name} 的类型");
+            if (field.ColumnIndex != draft.Base.ColumnIndex)
+            {
+                summaries.Add(
+                    $"{side} 将字段 {draft.Base.Name} 从 {MergeComparison.ColumnName(draft.Base.ColumnIndex)}列" +
+                    $"移动到 {MergeComparison.ColumnName(field.ColumnIndex)}列");
+            }
         }
     }
 
@@ -741,11 +896,11 @@ public sealed class LubanMergeCoordinator
         for (var rowNumber = 1; rowNumber < schemaMerge.TargetSchema.DataStartRowNumber; rowNumber++)
         {
             var baseCells = CreateAlignedCellArray(
-                FindRow(sheets.Base, rowNumber), schemas.Base, schemaMerge);
+                FindRow(sheets.Base, rowNumber), schemas.Base, schemaMerge, SchemaSide.Base);
             var localCells = CreateAlignedCellArray(
-                FindRow(sheets.Local, rowNumber), schemas.Local, schemaMerge);
+                FindRow(sheets.Local, rowNumber), schemas.Local, schemaMerge, SchemaSide.Local);
             var remoteCells = CreateAlignedCellArray(
-                FindRow(sheets.Remote, rowNumber), schemas.Remote, schemaMerge);
+                FindRow(sheets.Remote, rowNumber), schemas.Remote, schemaMerge, SchemaSide.Remote);
             for (var columnIndex = 0; columnIndex < schemaMerge.ColumnCount; columnIndex++)
             {
                 var baseCell = baseCells[columnIndex];
@@ -756,6 +911,12 @@ public sealed class LubanMergeCoordinator
 
                 var address = CellReference.Create(rowNumber, columnIndex);
                 var alignment = alignmentByColumn.GetValueOrDefault(columnIndex);
+                if (alignment?.HasStructuralVariation == true ||
+                    rowNumber == schemaMerge.TargetSchema.PrimaryVariableRowNumber ||
+                    rowNumber == schemaMerge.TargetSchema.TypeRowNumber)
+                {
+                    continue;
+                }
                 if (alignment is { Base: null, Local: null, Remote: not null })
                 {
                     if (!remoteCell.ContentEquals(localCell))
@@ -819,9 +980,28 @@ public sealed class LubanMergeCoordinator
                     StringComparer.Ordinal)))
             .ToArray();
 
-    private static ParsedDataset CreateDataset(
-        LubanSchema sourceSchema,
+    private static IReadOnlyList<LubanRecordSource> CreateRecordSources(
+        SheetSnapshot sheet,
         SchemaMergePlan schemaMerge,
+        SchemaSide side,
+        string workbookPath,
+        IReadOnlyList<OpenXmlRowSnapshot> dataRows) =>
+        dataRows
+            .Select(row => new LubanRecordSource(
+                workbookPath,
+                sheet.Name,
+                row.RowNumber,
+                schemaMerge.Fields.ToDictionary(
+                    alignment => alignment.Target.Name,
+                    alignment => GetSourceField(alignment, side) is { } field
+                        ? GetCell(row, field.ColumnIndex)?.Payload.RawValue
+                        : null,
+                    StringComparer.Ordinal)))
+            .ToArray();
+
+    private static ParsedDataset CreateDataset(
+        SchemaMergePlan schemaMerge,
+        SchemaSide side,
         RecordKeyDefinition keyDefinition,
         IReadOnlySet<string> ignoredFields,
         IReadOnlyList<OpenXmlRowSnapshot> dataRows)
@@ -830,9 +1010,9 @@ public sealed class LubanMergeCoordinator
         var records = new List<ParsedRecord>();
         foreach (var row in dataRows)
         {
-            var cells = targetSchema.Fields.ToDictionary(
-                field => field.Name,
-                field => sourceSchema.FindField(field.Name) is { } sourceField
+            var cells = schemaMerge.Fields.ToDictionary(
+                alignment => alignment.Target.Name,
+                alignment => GetSourceField(alignment, side) is { } sourceField
                     ? GetCell(row, sourceField.ColumnIndex)
                     : null,
                 StringComparer.Ordinal);
@@ -854,16 +1034,45 @@ public sealed class LubanMergeCoordinator
                 record,
                 cells,
                 recordKey.DisplayValue,
-                CreateAlignedCellArray(row, sourceSchema, schemaMerge)));
+                CreateAlignedCellArray(row, schemaMerge.GetSchema(side), schemaMerge, side)));
         }
 
+        return new ParsedDataset(records);
+    }
+
+    private static ParsedDataset NormalizeStructurallyDeletedFieldData(
+        ParsedDataset @base,
+        ParsedDataset side,
+        SchemaMergePlan schemaMerge,
+        SchemaSide schemaSide)
+    {
+        var deletedAlignments = schemaMerge.Fields
+            .Where(alignment => alignment.Base is not null && GetSourceField(alignment, schemaSide) is null)
+            .ToArray();
+        if (deletedAlignments.Length == 0)
+            return side;
+
+        var records = side.Records.Select(record =>
+        {
+            var baseRecord = @base.ByKey.GetValueOrDefault(record.Record.Key);
+            if (baseRecord is null)
+                return record;
+            var fields = record.Record.Fields.ToDictionary(field => field.Key, field => field.Value, StringComparer.Ordinal);
+            foreach (var alignment in deletedAlignments)
+            {
+                if (baseRecord.Record.Fields.TryGetValue(alignment.Target.Name, out var baseValue))
+                    fields[alignment.Target.Name] = baseValue;
+            }
+            return record with { Record = new LubanRecord(record.Record.Key, fields) };
+        }).ToArray();
         return new ParsedDataset(records);
     }
 
     private static CellPayload[] CreateAlignedCellArray(
         OpenXmlRowSnapshot? row,
         LubanSchema sourceSchema,
-        SchemaMergePlan schemaMerge)
+        SchemaMergePlan schemaMerge,
+        SchemaSide side)
     {
         var result = Enumerable.Repeat(CellPayload.Blank, schemaMerge.ColumnCount).ToArray();
         if (row is null)
@@ -881,7 +1090,7 @@ public sealed class LubanMergeCoordinator
 
         foreach (var alignment in schemaMerge.Fields)
         {
-            var sourceField = GetSourceField(alignment, sourceSchema);
+            var sourceField = GetSourceField(alignment, side);
             if (sourceField is not null)
             {
                 result[alignment.Target.ColumnIndex] =
@@ -891,8 +1100,235 @@ public sealed class LubanMergeCoordinator
         return result;
     }
 
-    private static LubanField? GetSourceField(AlignedField alignment, LubanSchema sourceSchema)
-        => sourceSchema.FindField(alignment.Target.Name);
+    private static LubanField? GetSourceField(AlignedField alignment, SchemaSide side) => side switch
+    {
+        SchemaSide.Base => alignment.Base,
+        SchemaSide.Local => alignment.Local,
+        SchemaSide.Remote => alignment.Remote,
+        _ => throw new ArgumentOutOfRangeException(nameof(side))
+    };
+
+    private static string MapFieldName(SchemaMergePlan schemaMerge, string sourceName)
+    {
+        var alignment = schemaMerge.Fields.FirstOrDefault(field =>
+            string.Equals(field.Base?.Name, sourceName, StringComparison.Ordinal) ||
+            string.Equals(field.Local?.Name, sourceName, StringComparison.Ordinal) ||
+            string.Equals(field.Remote?.Name, sourceName, StringComparison.Ordinal));
+        return alignment?.Target.Name ?? sourceName;
+    }
+
+    private static IReadOnlyList<WorkbookEdit> CreateFinalEdits(
+        (SheetSnapshot Base, SheetSnapshot Local, SheetSnapshot Remote) sheets,
+        SchemaMergePlan schemaMerge,
+        IReadOnlyList<WorkbookEdit> automaticEdits,
+        IReadOnlyList<ResolvableMergeConflict> conflicts)
+    {
+        var resolvedFields = ResolveFinalFields(schemaMerge, sheets.Local);
+        var structuralEdits = CreateColumnStructureEdits(sheets, schemaMerge, resolvedFields);
+        var selectedEdits = conflicts
+            .Where(conflict => !schemaMerge.Conflicts.Contains(conflict))
+            .SelectMany(conflict => conflict.GetSelectedEdits());
+        var analysisByColumn = schemaMerge.Fields.ToDictionary(field => field.Target.ColumnIndex);
+        var finalByIdentity = resolvedFields.ToDictionary(
+            field => field.Alignment.Identity,
+            StringComparer.Ordinal);
+        var remappedEdits = automaticEdits
+            .Concat(selectedEdits)
+            .SelectMany(edit => RemapEdit(
+                edit,
+                schemaMerge,
+                analysisByColumn,
+                finalByIdentity));
+        return structuralEdits.Concat(remappedEdits).ToArray();
+    }
+
+    private static IReadOnlyList<ResolvedField> ResolveFinalFields(
+        SchemaMergePlan schemaMerge,
+        SheetSnapshot localSheet)
+    {
+        var candidates = schemaMerge.Fields
+            .Select(alignment => (Alignment: alignment, Resolution: alignment.ResolveStructure()))
+            .Where(item => item.Resolution.Field is not null)
+            .Select(item => new ResolvedField(
+                item.Alignment,
+                item.Resolution.Field!,
+                item.Resolution.Source))
+            .ToArray();
+        var duplicateNames = candidates
+            .GroupBy(candidate => candidate.Field.Name, StringComparer.Ordinal)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToArray();
+        if (duplicateNames.Length > 0)
+        {
+            throw new InvalidOperationException(
+                "列结构选择后存在重复字段名：" + string.Join("、", duplicateNames) + "。");
+        }
+
+        var localFieldColumns = schemaMerge.Schemas.Local.Fields
+            .Select(field => field.ColumnIndex)
+            .ToHashSet();
+        var blockedColumns = localSheet.Rows
+            .SelectMany(row => row.Cells)
+            .Select(cell => cell.ColumnIndex)
+            .Where(column => !localFieldColumns.Contains(column))
+            .ToHashSet();
+        var usedColumns = new HashSet<int>(blockedColumns);
+        var nextColumn = candidates.Select(candidate => candidate.Field.ColumnIndex)
+            .Concat(blockedColumns)
+            .DefaultIfEmpty(-1)
+            .Max() + 1;
+        var resolved = new List<ResolvedField>(candidates.Length);
+        foreach (var candidate in candidates
+                     .OrderBy(candidate => ChoicePriority(candidate.Source))
+                     .ThenBy(candidate => candidate.Field.ColumnIndex))
+        {
+            var columnIndex = candidate.Field.ColumnIndex;
+            if (usedColumns.Contains(columnIndex))
+            {
+                while (usedColumns.Contains(nextColumn))
+                    nextColumn++;
+                columnIndex = nextColumn++;
+            }
+            usedColumns.Add(columnIndex);
+            resolved.Add(candidate with { Field = candidate.Field with { ColumnIndex = columnIndex } });
+        }
+        return resolved.OrderBy(field => field.Field.ColumnIndex).ToArray();
+    }
+
+    private static int ChoicePriority(MergeChoice choice) => choice switch
+    {
+        MergeChoice.Local => 0,
+        MergeChoice.Base => 1,
+        MergeChoice.Remote => 2,
+        _ => 3
+    };
+
+    private static IReadOnlyList<WorkbookEdit> CreateColumnStructureEdits(
+        (SheetSnapshot Base, SheetSnapshot Local, SheetSnapshot Remote) sheets,
+        SchemaMergePlan schemaMerge,
+        IReadOnlyList<ResolvedField> resolvedFields)
+    {
+        var finalByColumn = resolvedFields.ToDictionary(field => field.Field.ColumnIndex);
+        var affectedColumns = schemaMerge.Schemas.Local.Fields
+            .Select(field => field.ColumnIndex)
+            .Concat(resolvedFields.Select(field => field.Field.ColumnIndex))
+            .Distinct()
+            .Order()
+            .ToArray();
+        var edits = new List<WorkbookEdit>();
+        foreach (var localRow in sheets.Local.Rows)
+        {
+            foreach (var columnIndex in affectedColumns)
+            {
+                var actual = GetCell(localRow, columnIndex);
+                var desired = finalByColumn.TryGetValue(columnIndex, out var resolvedField)
+                    ? GetStructuralSourceCell(localRow.RowNumber, resolvedField, sheets, schemaMerge)
+                    : null;
+                var desiredPayload = desired?.Payload ?? CellPayload.Blank;
+                var desiredStyle = desired?.StyleIndex ?? actual?.StyleIndex;
+                if (actual is null && desiredPayload.Kind == CellValueKind.Blank && desiredStyle is null)
+                    continue;
+                if (actual is not null &&
+                    actual.Payload.ContentEquals(desiredPayload) &&
+                    string.Equals(actual.StyleIndex, desiredStyle, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                edits.Add(new SetCellEdit(
+                    sheets.Local.Name,
+                    CellReference.Create(localRow.RowNumber, columnIndex),
+                    desiredPayload,
+                    desiredStyle));
+            }
+        }
+        return edits;
+    }
+
+    private static OpenXmlCellSnapshot? GetStructuralSourceCell(
+        int rowNumber,
+        ResolvedField resolvedField,
+        (SheetSnapshot Base, SheetSnapshot Local, SheetSnapshot Remote) sheets,
+        SchemaMergePlan schemaMerge)
+    {
+        if (rowNumber >= schemaMerge.TargetSchema.DataStartRowNumber)
+        {
+            return resolvedField.Alignment.Local is { } localField
+                ? FindRow(sheets.Local, rowNumber)?.GetCell(localField.ColumnIndex)
+                : null;
+        }
+
+        var sourceField = GetSourceField(resolvedField.Alignment, resolvedField.Source);
+        var sourceSheet = resolvedField.Source switch
+        {
+            MergeChoice.Base => sheets.Base,
+            MergeChoice.Local => sheets.Local,
+            MergeChoice.Remote => sheets.Remote,
+            _ => throw new ArgumentOutOfRangeException()
+        };
+        return sourceField is null
+            ? null
+            : FindRow(sourceSheet, rowNumber)?.GetCell(sourceField.ColumnIndex);
+    }
+
+    private static LubanField? GetSourceField(AlignedField alignment, MergeChoice choice) => choice switch
+    {
+        MergeChoice.Base => alignment.Base,
+        MergeChoice.Local => alignment.Local,
+        MergeChoice.Remote => alignment.Remote,
+        _ => throw new ArgumentOutOfRangeException(nameof(choice))
+    };
+
+    private static IEnumerable<WorkbookEdit> RemapEdit(
+        WorkbookEdit edit,
+        SchemaMergePlan schemaMerge,
+        IReadOnlyDictionary<int, AlignedField> analysisByColumn,
+        IReadOnlyDictionary<string, ResolvedField> finalByIdentity)
+    {
+        switch (edit)
+        {
+            case SetCellEdit setCell:
+            {
+                var (rowNumber, columnIndex) = CellReference.Parse(setCell.Address);
+                if (!analysisByColumn.TryGetValue(columnIndex, out var alignment))
+                {
+                    yield return setCell;
+                    yield break;
+                }
+                if (rowNumber == schemaMerge.TargetSchema.PrimaryVariableRowNumber ||
+                    rowNumber == schemaMerge.TargetSchema.TypeRowNumber)
+                {
+                    yield break;
+                }
+                if (!finalByIdentity.TryGetValue(alignment.Identity, out var resolvedField))
+                    yield break;
+                yield return setCell with
+                {
+                    Address = CellReference.Create(rowNumber, resolvedField.Field.ColumnIndex)
+                };
+                yield break;
+            }
+            case AppendRowEdit appendRow:
+            {
+                var cells = new List<CellWrite>();
+                foreach (var cell in appendRow.Cells)
+                {
+                    if (!analysisByColumn.TryGetValue(cell.ColumnIndex, out var alignment))
+                    {
+                        cells.Add(cell);
+                        continue;
+                    }
+                    if (finalByIdentity.TryGetValue(alignment.Identity, out var resolvedField))
+                        cells.Add(cell with { ColumnIndex = resolvedField.Field.ColumnIndex });
+                }
+                yield return appendRow with { Cells = cells };
+                yield break;
+            }
+            default:
+                yield return edit;
+                yield break;
+        }
+    }
 
     private static IReadOnlyList<OpenXmlRowSnapshot> GetDataRows(SheetSnapshot sheet, LubanSchema schema) =>
         sheet.Rows
@@ -930,12 +1366,14 @@ public sealed class LubanMergeCoordinator
         var columnHeaders = Enumerable.Range(0, columnCount).Select(MergeComparison.ColumnName).ToArray();
         var rows = new List<ComparisonRowPlan>();
         var metadataConflictsByRow = conflicts
-            .Where(conflict => conflict.Conflict.Kind == MergeConflictKind.MetadataChanged &&
+            .Where(conflict => (conflict.Conflict.Kind == MergeConflictKind.MetadataChanged ||
+                                schemaMerge.Conflicts.Contains(conflict)) &&
                                conflict.RowNumber is not null)
             .GroupBy(conflict => conflict.RowNumber!.Value)
             .ToDictionary(group => group.Key, group => (IReadOnlyList<ResolvableMergeConflict>)group.ToArray());
         var dataConflictsByRecord = conflicts
-            .Where(conflict => conflict.Conflict.Kind != MergeConflictKind.MetadataChanged)
+            .Where(conflict => conflict.Conflict.Kind != MergeConflictKind.MetadataChanged &&
+                               !schemaMerge.Conflicts.Contains(conflict))
             .GroupBy(conflict => conflict.Conflict.RecordKey, StringComparer.Ordinal)
             .ToDictionary(
                 group => group.Key,
@@ -960,9 +1398,9 @@ public sealed class LubanMergeCoordinator
                 rowNumber,
                 rowNumber,
                 rowNumber,
-                CreateAlignedCellArray(FindRow(sheets.Base, rowNumber), schemas.Base, schemaMerge),
-                CreateAlignedCellArray(FindRow(sheets.Local, rowNumber), schemas.Local, schemaMerge),
-                CreateAlignedCellArray(FindRow(sheets.Remote, rowNumber), schemas.Remote, schemaMerge),
+                CreateAlignedCellArray(FindRow(sheets.Base, rowNumber), schemas.Base, schemaMerge, SchemaSide.Base),
+                CreateAlignedCellArray(FindRow(sheets.Local, rowNumber), schemas.Local, schemaMerge, SchemaSide.Local),
+                CreateAlignedCellArray(FindRow(sheets.Remote, rowNumber), schemas.Remote, schemaMerge, SchemaSide.Remote),
                 null,
                 metadataCellConflicts));
         }
@@ -1019,7 +1457,13 @@ public sealed class LubanMergeCoordinator
             .Where(field => ignoredFields.Contains(field.Name))
             .Select(field => field.ColumnIndex)
             .ToHashSet();
-        return new MergeComparison(columnHeaders, rows, conflicts, ignoredColumns);
+        return new MergeComparison(
+            columnHeaders,
+            rows,
+            conflicts,
+            ignoredColumns,
+            schemaMerge.IsIncludedForPreview,
+            schemaMerge.MergeStructuralCellForPreview);
     }
 
     private static void AddComparisonRow(
@@ -1373,16 +1817,136 @@ public sealed class LubanMergeCoordinator
         string DisplayKey,
         CellPayload[] AlignedCells);
 
-    private sealed record AlignedField(
-        LubanField Target,
+    private enum SchemaSide
+    {
+        Base,
+        Local,
+        Remote
+    }
+
+    private sealed record FieldAlignmentDraft(
+        string Identity,
+        string DisplayName,
         LubanField? Base,
         LubanField? Local,
         LubanField? Remote);
 
+    private sealed class MutableFieldAlignment
+    {
+        public MutableFieldAlignment(
+            string identity,
+            string displayName,
+            LubanField? @base,
+            LubanField? local,
+            LubanField? remote)
+        {
+            Identity = identity;
+            DisplayName = displayName;
+            Base = @base;
+            Local = local;
+            Remote = remote;
+        }
+
+        public string Identity { get; }
+        public string DisplayName { get; }
+        public LubanField? Base { get; }
+        public LubanField? Local { get; set; }
+        public LubanField? Remote { get; set; }
+        public FieldAlignmentDraft ToImmutable() =>
+            new(Identity, DisplayName, Base, Local, Remote);
+    }
+
+    private sealed record FieldStructureDecision(
+        LubanField? Result,
+        MergeChoice Source,
+        bool IsConflict);
+
+    private sealed record ResolvedField(
+        AlignedField Alignment,
+        LubanField Field,
+        MergeChoice Source);
+
+    private sealed record AlignedField(
+        string Identity,
+        LubanField Target,
+        LubanField? Base,
+        LubanField? Local,
+        LubanField? Remote,
+        FieldStructureDecision StructureDecision,
+        ResolvableMergeConflict? StructureConflict)
+    {
+        public bool HasStructuralVariation =>
+            !FieldEquals(Base, Local) || !FieldEquals(Base, Remote);
+
+        public (LubanField? Field, MergeChoice Source) ResolveStructure()
+        {
+            if (StructureConflict?.SelectedChoice is { } selected)
+            {
+                return selected switch
+                {
+                    MergeChoice.Base => (Base, selected),
+                    MergeChoice.Local => (Local, selected),
+                    MergeChoice.Remote => (Remote, selected),
+                    _ => throw new ArgumentOutOfRangeException()
+                };
+            }
+            return (StructureDecision.Result, StructureDecision.Source);
+        }
+    }
+
     private sealed record SchemaMergePlan(
         LubanSchema TargetSchema,
         IReadOnlyList<AlignedField> Fields,
-        int ColumnCount);
+        int ColumnCount,
+        IReadOnlyList<ResolvableMergeConflict> Conflicts,
+        IReadOnlyList<string> StructuralChanges,
+        (LubanSchema Base, LubanSchema Local, LubanSchema Remote) Schemas)
+    {
+        public LubanSchema GetSchema(SchemaSide side) => side switch
+        {
+            SchemaSide.Base => Schemas.Base,
+            SchemaSide.Local => Schemas.Local,
+            SchemaSide.Remote => Schemas.Remote,
+            _ => throw new ArgumentOutOfRangeException(nameof(side))
+        };
+
+        public bool IsIncludedForPreview(int columnIndex)
+        {
+            var alignment = Fields.FirstOrDefault(field => field.Target.ColumnIndex == columnIndex);
+            if (alignment is null)
+                return true;
+            if (alignment.StructureConflict is null)
+                return alignment.StructureDecision.Result is not null;
+            return (alignment.StructureConflict.SelectedChoice ?? MergeChoice.Local) switch
+            {
+                MergeChoice.Base => alignment.Base is not null,
+                MergeChoice.Local => alignment.Local is not null,
+                MergeChoice.Remote => alignment.Remote is not null,
+                _ => true
+            };
+        }
+
+        public CellPayload? MergeStructuralCellForPreview(
+            int columnIndex,
+            string recordKey,
+            CellPayload baseCell,
+            CellPayload localCell,
+            CellPayload remoteCell)
+        {
+            var alignment = Fields.FirstOrDefault(field => field.Target.ColumnIndex == columnIndex);
+            if (alignment?.Base is null || alignment.Local is not null && alignment.Remote is not null)
+                return null;
+            var effectiveLocal = alignment.Local is null ? baseCell : localCell;
+            var effectiveRemote = alignment.Remote is null ? baseCell : remoteCell;
+            var decision = CellThreeWayMerger.Merge(
+                baseCell,
+                effectiveLocal,
+                effectiveRemote,
+                recordKey,
+                alignment.Target.Name);
+            return decision.Result ?? effectiveLocal;
+        }
+    }
 
     private sealed record MetadataMergePlan(
         IReadOnlyList<WorkbookEdit> Edits,

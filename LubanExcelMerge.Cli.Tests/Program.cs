@@ -84,10 +84,17 @@ try
         ("different LOCAL and REMOTE appended fields form a union", () => DifferentAppendedFieldsFormUnion(testRoot)),
         ("same appended field data conflict is resolvable", () => SameAppendedFieldDataConflictIsResolvable(testRoot)),
         ("same appended field type conflict requires review", () => SameAppendedFieldTypeConflictRequiresReview(testRoot)),
-        ("REMOTE field inserted inside layout moves to safe column", () => RemoteInsertedFieldMovesToSafeColumn(testRoot)),
+        ("REMOTE field inserted inside layout reorders existing fields", () => RemoteInsertedFieldReordersExistingFields(testRoot)),
+        ("REMOTE inserted field moves and updates formula field", () => RemoteInsertedFieldMovesFormulaField(testRoot)),
         ("LOCAL field inserted inside layout remains the MERGED layout", () => LocalInsertedFieldDefinesMergedLayout(testRoot)),
-        ("reordered existing fields remain unsafe", () => ReorderedExistingFieldsRemainUnsafe(testRoot)),
-        ("field definition changes remain unsafe", () => FieldDefinitionChangeRemainsUnsafe(testRoot)),
+        ("REMOTE reordered existing fields merge", () => RemoteReorderedExistingFieldsMerge(testRoot)),
+        ("REMOTE deleted existing field merges", () => RemoteDeletedExistingFieldMerges(testRoot)),
+        ("REMOTE existing field type change merges", () => RemoteExistingFieldTypeChangeMerges(testRoot)),
+        ("REMOTE existing field rename merges", () => RemoteExistingFieldRenameMerges(testRoot)),
+        ("LOCAL primary-key field rename preserves record identity", () => LocalPrimaryKeyFieldRenamePreservesIdentity(testRoot)),
+        ("column delete-modify conflict is resolvable", () => ColumnDeleteModifyConflictIsResolvable(testRoot)),
+        ("column modify-modify conflict is resolvable", () => ColumnModifyModifyConflictIsResolvable(testRoot)),
+        ("column move-move conflict is resolvable", () => ColumnMoveMoveConflictIsResolvable(testRoot)),
         ("commented data rows do not participate in keys", () => CommentedDataRowsAreIgnored(testRoot)),
         ("conflict returns 1 and preserves MERGED", () => ConflictPreservesMerged(testRoot)),
         ("interactive session resolves one field and keeps automatic fields", () => InteractiveCellResolution(testRoot)),
@@ -950,42 +957,76 @@ static void SameAppendedFieldTypeConflictRequiresReview(string testRoot)
     Equal(1, session.RemainingConflicts);
     var conflict = session.Conflicts.Single();
     Equal(Core.MergeConflictKind.MetadataChanged, conflict.Conflict.Kind);
-    Equal("D3", conflict.Conflict.FieldName);
+    Equal("D1", conflict.Conflict.FieldName);
     conflict.Resolve(MergeChoice.Remote);
     session.Save();
     Equal("int", ParseWorkbookSchema(scenario.OutputPath).FindField("SharedField")!.TypeName);
 }
 
-static void RemoteInsertedFieldMovesToSafeColumn(string testRoot)
+static void RemoteInsertedFieldReordersExistingFields(string testRoot)
 {
     var scenario = CreateScenario(Path.Combine(testRoot, "inserted-field-inside-layout"));
-    var records = new[] { new[] { "1", "a", "b" } };
     TestWorkbookFactory.CreateWithSchema(
         scenario.BasePath,
         new[] { "Id", "A", "B" },
         new[] { "string", "string", "string" },
-        records);
+        new[] { new[] { "1", "a", "b" } });
     TestWorkbookFactory.CreateWithSchema(
         scenario.LocalPath,
         new[] { "Id", "A", "B" },
         new[] { "string", "string", "string" },
-        records);
+        new[] { new[] { "1", "local-a", "b" } });
     TestWorkbookFactory.CreateWithSchema(
         scenario.RemotePath,
         new[] { "Id", "Inserted", "A", "B" },
         new[] { "string", "string", "string", "string" },
-        new[] { new[] { "1", "new", "a", "b" } });
+        new[] { new[] { "1", "new", "a", "remote-b" } });
 
     var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
 
     Equal(0, session.RemainingConflicts);
+    True(session.RequiresStructuralChangeConfirmation);
     session.Save();
     var schema = ParseWorkbookSchema(scenario.OutputPath);
     Equal("Id", schema.Fields[0].Name);
-    Equal("A", schema.Fields[1].Name);
-    Equal("B", schema.Fields[2].Name);
-    Equal("Inserted", schema.Fields[3].Name);
-    Equal("new", ReadCellValue(scenario.OutputPath, "Data", "E4"));
+    Equal("Inserted", schema.Fields[1].Name);
+    Equal("A", schema.Fields[2].Name);
+    Equal("B", schema.Fields[3].Name);
+    Equal("new", ReadCellValue(scenario.OutputPath, "Data", "C4"));
+    Equal("local-a", ReadCellValue(scenario.OutputPath, "Data", "D4"));
+    Equal("remote-b", ReadCellValue(scenario.OutputPath, "Data", "E4"));
+}
+
+static void RemoteInsertedFieldMovesFormulaField(string testRoot)
+{
+    var scenario = CreateScenario(Path.Combine(testRoot, "inserted-field-moves-formula"));
+    foreach (var path in new[] { scenario.BasePath, scenario.LocalPath })
+    {
+        TestWorkbookFactory.CreateWithSchema(
+            path,
+            new[] { "Id", "A", "B" },
+            new[] { "string", "string", "int" },
+            new[] { new[] { "1", "a", "" } });
+        SetWorkbookFormula(path, "Data", "D4", "LEN(C4)", "1");
+    }
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.RemotePath,
+        new[] { "Id", "Inserted", "A", "B" },
+        new[] { "string", "string", "string", "int" },
+        new[] { new[] { "1", "new", "a", "" } });
+    SetWorkbookFormula(scenario.RemotePath, "Data", "E4", "LEN(D4)", "1");
+
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+
+    Equal(0, session.RemainingConflicts);
+    True(session.RequiresStructuralChangeConfirmation);
+    var result = session.Save();
+    Equal(WorkbookRecalculationStatus.SourceCachePreservedUnverified, result.RecalculationStatus);
+    var output = new OpenXmlWorkbookReader().Read(scenario.OutputPath).GetSheet("Data");
+    Equal("new", output.GetCell("C4")!.Payload.RawValue);
+    Equal("a", output.GetCell("D4")!.Payload.RawValue);
+    Equal("LEN(D4)", output.GetCell("E4")!.Payload.FormulaText);
+    Equal("1", output.GetCell("E4")!.Payload.CachedValue);
 }
 
 static void LocalInsertedFieldDefinesMergedLayout(string testRoot)
@@ -1019,7 +1060,7 @@ static void LocalInsertedFieldDefinesMergedLayout(string testRoot)
     Equal("remote-b", ReadCellValue(scenario.OutputPath, "Data", "E4"));
 }
 
-static void ReorderedExistingFieldsRemainUnsafe(string testRoot)
+static void RemoteReorderedExistingFieldsMerge(string testRoot)
 {
     var scenario = CreateScenario(Path.Combine(testRoot, "reordered-existing-fields"));
     var records = new[] { new[] { "1", "a", "b" } };
@@ -1039,18 +1080,82 @@ static void ReorderedExistingFieldsRemainUnsafe(string testRoot)
         new[] { "string", "string", "string" },
         new[] { new[] { "1", "b", "a" } });
 
-    try
-    {
-        new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
-        throw new InvalidOperationException("Expected reordered fields to be rejected.");
-    }
-    catch (UnsafeWorkbookException exception)
-    {
-        True(exception.Message.Contains("相对顺序", StringComparison.Ordinal));
-    }
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+
+    Equal(0, session.RemainingConflicts);
+    True(session.RequiresStructuralChangeConfirmation);
+    session.Save();
+    var schema = ParseWorkbookSchema(scenario.OutputPath);
+    Equal("Id", schema.Fields[0].Name);
+    Equal("B", schema.Fields[1].Name);
+    Equal("A", schema.Fields[2].Name);
+    Equal("b", ReadCellValue(scenario.OutputPath, "Data", "C4"));
+    Equal("a", ReadCellValue(scenario.OutputPath, "Data", "D4"));
 }
 
-static void FieldDefinitionChangeRemainsUnsafe(string testRoot)
+static void RemoteDeletedExistingFieldMerges(string testRoot)
+{
+    var scenario = CreateScenario(Path.Combine(testRoot, "deleted-existing-field"));
+    var records = new[] { new[] { "1", "a", "b" } };
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.BasePath,
+        new[] { "Id", "A", "B" },
+        new[] { "string", "string", "string" },
+        records);
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.LocalPath,
+        new[] { "Id", "A", "B" },
+        new[] { "string", "string", "string" },
+        records);
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.RemotePath,
+        new[] { "Id", "A" },
+        new[] { "string", "string" },
+        new[] { new[] { "1", "a" } });
+
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+
+    Equal(0, session.RemainingConflicts);
+    True(session.RequiresStructuralChangeConfirmation);
+    Equal(string.Empty, session.Comparison.CreateTable(MergeGridSide.Merged)
+        .Rows.Single(row => row.RecordKey == "1").Cells[3].DisplayValue);
+    session.Save();
+    var schema = ParseWorkbookSchema(scenario.OutputPath);
+    True(schema.FindField("B") is null);
+    Equal(2, schema.Fields.Count);
+    True(ReadCellValue(scenario.OutputPath, "Data", "D4") is null);
+}
+
+static void RemoteExistingFieldTypeChangeMerges(string testRoot)
+{
+    var scenario = CreateScenario(Path.Combine(testRoot, "existing-field-type-change"));
+    var records = new[] { new[] { "1", "a", "1" } };
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.BasePath,
+        new[] { "Id", "A", "B" },
+        new[] { "string", "string", "string" },
+        records);
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.LocalPath,
+        new[] { "Id", "A", "B" },
+        new[] { "string", "string", "string" },
+        records);
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.RemotePath,
+        new[] { "Id", "A", "B" },
+        new[] { "string", "string", "int" },
+        records);
+
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+
+    Equal(0, session.RemainingConflicts);
+    True(session.RequiresStructuralChangeConfirmation);
+    session.Save();
+    Equal("int", ParseWorkbookSchema(scenario.OutputPath).FindField("B")!.TypeName);
+    Equal("1", ReadCellValue(scenario.OutputPath, "Data", "D4"));
+}
+
+static void RemoteExistingFieldRenameMerges(string testRoot)
 {
     var scenario = CreateScenario(Path.Combine(testRoot, "metadata-field-definition"));
     var records = new[] { new[] { "1", "a", "b" } };
@@ -1059,15 +1164,148 @@ static void FieldDefinitionChangeRemainsUnsafe(string testRoot)
     TestWorkbookFactory.Create(scenario.RemotePath, records);
     SetWorkbookCell(scenario.RemotePath, "Data", "D1", "RenamedField");
 
-    try
-    {
-        new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
-        throw new InvalidOperationException("Expected field definition change to be rejected.");
-    }
-    catch (UnsafeWorkbookException exception)
-    {
-        True(exception.Message.Contains("重命名", StringComparison.Ordinal));
-    }
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+
+    Equal(0, session.RemainingConflicts);
+    True(session.RequiresStructuralChangeConfirmation);
+    session.Save();
+    var schema = ParseWorkbookSchema(scenario.OutputPath);
+    True(schema.FindField("B") is null);
+    Equal("string", schema.FindField("RenamedField")!.TypeName);
+    Equal("b", ReadCellValue(scenario.OutputPath, "Data", "D4"));
+}
+
+static void LocalPrimaryKeyFieldRenamePreservesIdentity(string testRoot)
+{
+    var scenario = CreateScenario(Path.Combine(testRoot, "local-key-field-rename"));
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.BasePath,
+        new[] { "Id", "A", "B" },
+        new[] { "string", "string", "string" },
+        new[] { new[] { "1", "a", "b" } });
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.LocalPath,
+        new[] { "Key", "A", "B" },
+        new[] { "string", "string", "string" },
+        new[] { new[] { "1", "local-a", "b" } });
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.RemotePath,
+        new[] { "Id", "A", "B" },
+        new[] { "string", "string", "string" },
+        new[] { new[] { "1", "a", "remote-b" } });
+
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+
+    Equal(0, session.RemainingConflicts);
+    True(session.RequiresStructuralChangeConfirmation);
+    session.Save();
+    var schema = ParseWorkbookSchema(scenario.OutputPath);
+    True(schema.FindField("Id") is null);
+    True(schema.FindField("Key") is not null);
+    Equal("local-a", ReadCellValue(scenario.OutputPath, "Data", "C4"));
+    Equal("remote-b", ReadCellValue(scenario.OutputPath, "Data", "D4"));
+}
+
+static void ColumnDeleteModifyConflictIsResolvable(string testRoot)
+{
+    var scenario = CreateScenario(Path.Combine(testRoot, "column-delete-modify"));
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.BasePath,
+        new[] { "Id", "A", "B" },
+        new[] { "string", "string", "string" },
+        new[] { new[] { "1", "a", "7" } });
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.LocalPath,
+        new[] { "Id", "A" },
+        new[] { "string", "string" },
+        new[] { new[] { "1", "a" } });
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.RemotePath,
+        new[] { "Id", "A", "B" },
+        new[] { "string", "string", "int" },
+        new[] { new[] { "1", "a", "8" } });
+
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+
+    Equal(1, session.RemainingConflicts);
+    True(session.RequiresStructuralChangeConfirmation);
+    var conflict = session.Conflicts.Single();
+    Equal(Core.MergeConflictKind.DeleteModify, conflict.Conflict.Kind);
+    True(conflict.LocalValue.Contains("已删除", StringComparison.Ordinal));
+    Equal(string.Empty, session.Comparison.CreateTable(MergeGridSide.Merged)
+        .Rows.Single(row => row.RecordKey == "1").Cells[3].DisplayValue);
+    conflict.Resolve(MergeChoice.Remote);
+    Equal("8", session.Comparison.CreateTable(MergeGridSide.Merged)
+        .Rows.Single(row => row.RecordKey == "1").Cells[3].DisplayValue);
+    session.Save();
+    var schema = ParseWorkbookSchema(scenario.OutputPath);
+    Equal("int", schema.FindField("B")!.TypeName);
+    Equal("8", ReadCellValue(scenario.OutputPath, "Data", "D4"));
+}
+
+static void ColumnModifyModifyConflictIsResolvable(string testRoot)
+{
+    var scenario = CreateScenario(Path.Combine(testRoot, "column-modify-modify"));
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.BasePath,
+        new[] { "Id", "A", "B" },
+        new[] { "string", "string", "string" },
+        new[] { new[] { "1", "a", "1" } });
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.LocalPath,
+        new[] { "Id", "A", "B" },
+        new[] { "string", "string", "int" },
+        new[] { new[] { "1", "a", "1" } });
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.RemotePath,
+        new[] { "Id", "A", "B" },
+        new[] { "string", "string", "bool" },
+        new[] { new[] { "1", "a", "1" } });
+
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+
+    Equal(1, session.RemainingConflicts);
+    True(session.RequiresStructuralChangeConfirmation);
+    var conflict = session.Conflicts.Single();
+    Equal(Core.MergeConflictKind.MetadataChanged, conflict.Conflict.Kind);
+    conflict.Resolve(MergeChoice.Remote);
+    session.Save();
+    Equal("bool", ParseWorkbookSchema(scenario.OutputPath).FindField("B")!.TypeName);
+}
+
+static void ColumnMoveMoveConflictIsResolvable(string testRoot)
+{
+    var scenario = CreateScenario(Path.Combine(testRoot, "column-move-move"));
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.BasePath,
+        new[] { "Id", "", "A", "", "B" },
+        new[] { "string", "", "string", "", "string" },
+        new[] { new[] { "1", "", "a", "", "b" } });
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.LocalPath,
+        new[] { "Id", "A", "", "", "B" },
+        new[] { "string", "string", "", "", "string" },
+        new[] { new[] { "1", "a", "", "", "b" } });
+    TestWorkbookFactory.CreateWithSchema(
+        scenario.RemotePath,
+        new[] { "Id", "", "", "A", "B" },
+        new[] { "string", "", "", "string", "string" },
+        new[] { new[] { "1", "", "", "a", "b" } });
+
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+
+    Equal(1, session.RemainingConflicts);
+    True(session.RequiresStructuralChangeConfirmation);
+    var conflict = session.Conflicts.Single();
+    Equal(Core.MergeConflictKind.MetadataChanged, conflict.Conflict.Kind);
+    True(conflict.LocalValue.Contains("C列", StringComparison.Ordinal));
+    True(conflict.RemoteValue.Contains("E列", StringComparison.Ordinal));
+    conflict.Resolve(MergeChoice.Remote);
+    session.Save();
+    var schema = ParseWorkbookSchema(scenario.OutputPath);
+    Equal(4, schema.FindField("A")!.ColumnIndex);
+    Equal("a", ReadCellValue(scenario.OutputPath, "Data", "E4"));
+    True(ReadCellValue(scenario.OutputPath, "Data", "C4") is null);
 }
 
 static LubanExcelMerge.Luban.LubanSchema ParseWorkbookSchema(string path)
@@ -1113,6 +1351,25 @@ static void SetWorkbookCell(string path, string sheetName, string address, strin
         new WorkbookEdit[]
         {
             new SetCellEdit(sheetName, address, new Core.CellPayload(Core.CellValueKind.String, value))
+        });
+
+static void SetWorkbookFormula(
+    string path,
+    string sheetName,
+    string address,
+    string formula,
+    string cachedValue) =>
+    new OpenXmlWorkbookEditor().Apply(
+        path,
+        new WorkbookEdit[]
+        {
+            new SetCellEdit(
+                sheetName,
+                address,
+                new Core.CellPayload(
+                    Core.CellValueKind.Formula,
+                    FormulaText: formula,
+                    CachedValue: cachedValue))
         });
 
 static string? ReadCellValue(string path, string sheetName, string address) =>
@@ -2113,7 +2370,8 @@ internal static class TestWorkbookFactory
     {
         var sheetData = new XElement(Spreadsheet + "sheetData");
         sheetData.Add(CreateRow(1, new[] { "##var" }.Concat(fieldNames).ToArray()));
-        sheetData.Add(CreateRow(2, new[] { "##" }.Concat(fieldNames.Select(name => $"字段{name}")).ToArray()));
+        sheetData.Add(CreateRow(2, new[] { "##" }.Concat(fieldNames.Select(name =>
+            string.IsNullOrEmpty(name) ? string.Empty : $"字段{name}")).ToArray()));
         sheetData.Add(CreateRow(3, new[] { "##type" }.Concat(fieldTypes).ToArray()));
         for (var index = 0; index < records.Count; index++)
         {

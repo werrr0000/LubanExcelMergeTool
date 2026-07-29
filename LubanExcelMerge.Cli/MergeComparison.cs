@@ -45,6 +45,8 @@ public sealed class MergeComparison
     private readonly IReadOnlySet<int> _ignoredColumns;
     private readonly IReadOnlyDictionary<int, int> _localRowIndices;
     private readonly IReadOnlyDictionary<int, int> _remoteRowIndices;
+    private readonly Func<int, bool> _mergedColumnIncluded;
+    private readonly Func<int, string, CellPayload, CellPayload, CellPayload, CellPayload?> _structuralCellMerge;
     private MergeGridTable? _baseTable;
     private MergeGridTable? _localTable;
     private MergeGridTable? _remoteTable;
@@ -53,12 +55,16 @@ public sealed class MergeComparison
         IReadOnlyList<string> columnHeaders,
         IReadOnlyList<ComparisonRowPlan> rows,
         IReadOnlyList<ResolvableMergeConflict> conflicts,
-        IReadOnlySet<int> ignoredColumns)
+        IReadOnlySet<int> ignoredColumns,
+        Func<int, bool>? mergedColumnIncluded = null,
+        Func<int, string, CellPayload, CellPayload, CellPayload, CellPayload?>? structuralCellMerge = null)
     {
         ColumnHeaders = columnHeaders;
         _rows = rows;
         _conflicts = conflicts.ToDictionary(conflict => conflict.Id, StringComparer.Ordinal);
         _ignoredColumns = ignoredColumns;
+        _mergedColumnIncluded = mergedColumnIncluded ?? (_ => true);
+        _structuralCellMerge = structuralCellMerge ?? ((_, _, _, _, _) => null);
         _localRowIndices = rows
             .Select((row, index) => (row.LocalRowNumber, Index: index))
             .Where(item => item.LocalRowNumber is not null)
@@ -211,6 +217,11 @@ public sealed class MergeComparison
             var metadataResult = row.LocalCells?.ToArray() ?? new CellPayload[ColumnHeaders.Count];
             for (var columnIndex = 0; columnIndex < metadataResult.Length; columnIndex++)
             {
+                if (!_mergedColumnIncluded(columnIndex))
+                {
+                    metadataResult[columnIndex] = CellPayload.Blank;
+                    continue;
+                }
                 if (row.CellConflictIds.TryGetValue(columnIndex, out var conflictId))
                 {
                     var choice = _conflicts[conflictId].SelectedChoice ?? MergeChoice.Local;
@@ -237,6 +248,11 @@ public sealed class MergeComparison
         var result = new CellPayload[ColumnHeaders.Count];
         for (var columnIndex = 0; columnIndex < result.Length; columnIndex++)
         {
+            if (!_mergedColumnIncluded(columnIndex))
+            {
+                result[columnIndex] = CellPayload.Blank;
+                continue;
+            }
             if (row.CellConflictIds.TryGetValue(columnIndex, out var conflictId))
             {
                 var choice = _conflicts[conflictId].SelectedChoice ?? MergeChoice.Local;
@@ -274,6 +290,15 @@ public sealed class MergeComparison
             return localCell;
         if (_ignoredColumns.Contains(columnIndex))
             return localCell;
+
+        var structuralResult = _structuralCellMerge(
+            columnIndex,
+            row.RecordKey,
+            baseCell,
+            localCell,
+            remoteCell);
+        if (structuralResult is not null)
+            return structuralResult;
 
         var decision = CellThreeWayMerger.Merge(baseCell, localCell, remoteCell, row.RecordKey, ColumnName(columnIndex));
         return decision.Result ?? localCell;
