@@ -1,0 +1,17 @@
+{
+  "dataRoot": "ConfigLuban/Datas",
+  "tablesFile": "ConfigLuban/Datas/__tables__.csv",
+  "inactivePaths": [
+    "ConfigLuban/Datas/暂时不用/**"
+  ],
+  "keyOverrides": {},
+  "ignoredFields": {},
+  "formulaRecalculation": "auto",
+  "validateLogicalTableUniqueness": true,
+  "validation": {
+    "enabled": true,
+    "windowsCommand": "ConfigLuban/check.bat",
+    "fullExportEnabled": false,
+    "fullExportCommand": "ConfigLuban/gen-pipeline.bat"
+  }
+}

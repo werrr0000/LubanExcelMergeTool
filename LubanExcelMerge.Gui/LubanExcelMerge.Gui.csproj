@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>LubanExcelMerge.Gui</AssemblyName>
+    <Version>1.1.0</Version>
+    <Product>Luban Excel Merge</Product>
+    <Description>Luban Excel three-way merge tool for Git and Fork</Description>
+    <ApplicationIcon>Assets\LubanExcelMerge.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\LubanExcelMerge.Cli\LubanExcelMerge.Cli.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\LubanExcelMerge.ico" />
+  </ItemGroup>
+</Project>

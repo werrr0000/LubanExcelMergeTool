@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>LubanExcelMerge</AssemblyName>
+    <Version>1.1.0</Version>
+    <Product>Luban Excel Merge</Product>
+    <Description>Luban Excel three-way merge command line tool</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\LubanExcelMerge.Core\LubanExcelMerge.Core.csproj" />
+    <ProjectReference Include="..\LubanExcelMerge.Git\LubanExcelMerge.Git.csproj" />
+    <ProjectReference Include="..\LubanExcelMerge.Luban\LubanExcelMerge.Luban.csproj" />
+    <ProjectReference Include="..\LubanExcelMerge.OpenXml\LubanExcelMerge.OpenXml.csproj" />
+  </ItemGroup>
+</Project>

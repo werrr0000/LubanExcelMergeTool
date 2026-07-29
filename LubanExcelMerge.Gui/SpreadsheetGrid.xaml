@@ -1,0 +1,62 @@
+<UserControl x:Class="LubanExcelMerge.Gui.SpreadsheetGrid"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Focusable="False">
+    <DataGrid x:Name="Grid"
+              AutoGenerateColumns="False"
+              IsReadOnly="True"
+              CanUserAddRows="False"
+              CanUserDeleteRows="False"
+              CanUserReorderColumns="False"
+              CanUserSortColumns="False"
+              HeadersVisibility="All"
+              RowHeaderWidth="48"
+              RowHeight="26"
+              ColumnHeaderHeight="28"
+              GridLinesVisibility="All"
+              HorizontalGridLinesBrush="#E1E5E9"
+              VerticalGridLinesBrush="#E1E5E9"
+              BorderThickness="0"
+              Background="White"
+              SelectionMode="Single"
+              SelectionUnit="Cell"
+              EnableRowVirtualization="True"
+              EnableColumnVirtualization="True"
+              VirtualizingPanel.IsVirtualizing="True"
+              VirtualizingPanel.VirtualizationMode="Recycling"
+              ScrollViewer.CanContentScroll="True"
+              ScrollViewer.HorizontalScrollBarVisibility="Auto"
+              ScrollViewer.VerticalScrollBarVisibility="Auto"
+              PreviewMouseLeftButtonDown="Grid_PreviewMouseLeftButtonDown"
+              SelectedCellsChanged="Grid_SelectedCellsChanged"
+              Loaded="Grid_Loaded">
+        <DataGrid.Resources>
+            <Style TargetType="DataGridColumnHeader">
+                <Setter Property="Background" Value="#EEF1F4" />
+                <Setter Property="Foreground" Value="#39434D" />
+                <Setter Property="BorderBrush" Value="#D4D9DE" />
+                <Setter Property="BorderThickness" Value="0,0,1,1" />
+                <Setter Property="HorizontalContentAlignment" Value="Center" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+            </Style>
+            <Style TargetType="DataGridRowHeader">
+                <Setter Property="Background" Value="#F4F6F8" />
+                <Setter Property="Foreground" Value="#69737D" />
+                <Setter Property="BorderBrush" Value="#D4D9DE" />
+                <Setter Property="BorderThickness" Value="0,0,1,1" />
+                <Setter Property="HorizontalContentAlignment" Value="Center" />
+                <Setter Property="Content" Value="{Binding Source.RowHeader}" />
+            </Style>
+            <Style TargetType="DataGridRow">
+                <Setter Property="BorderBrush" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsScopeSelected}" Value="True">
+                        <Setter Property="BorderBrush" Value="#176B87" />
+                        <Setter Property="BorderThickness" Value="0,2" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </DataGrid.Resources>
+    </DataGrid>
+</UserControl>
