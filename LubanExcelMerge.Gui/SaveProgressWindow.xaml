@@ -1,0 +1,28 @@
+<Window x:Class="LubanExcelMerge.Gui.SaveProgressWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="保存中..."
+        Width="400" Height="170"
+        WindowStartupLocation="CenterOwner"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False">
+    <Border Background="White" BorderBrush="#CBD3DA" BorderThickness="1" Padding="24">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="18" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="14" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Text="保存中..." FontSize="18" FontWeight="SemiBold" />
+            <ProgressBar Grid.Row="2" Height="8" IsIndeterminate="True"
+                         Foreground="{StaticResource AccentBrush}" />
+            <TextBlock Grid.Row="4"
+                       Text="正在原子保存并验证工作簿，请勿关闭工具。"
+                       Foreground="{StaticResource MutedBrush}" />
+        </Grid>
+    </Border>
+</Window>

@@ -40,6 +40,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private RecalculationModeOption _selectedRecalculationMode;
     private string _statusText = "请选择四个版本文件并加载";
     private bool _isBusy;
+    private bool _isSaving;
     private bool _settingSelectionFromGrid;
     private int _automaticEditNavigationIndex = -1;
 
@@ -154,9 +155,19 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public event Action<int, int>? ConflictNavigationRequested;
     public event Action? ExternalMergeCompleted;
     public event Action? CloseRequested;
+    public event Action<bool>? SavingStateChanged;
 
     public string StatusText { get => _statusText; private set => SetField(ref _statusText, value); }
     public bool IsBusy { get => _isBusy; private set { if (SetField(ref _isBusy, value)) RaiseCommandStates(); } }
+    public bool IsSaving
+    {
+        get => _isSaving;
+        private set
+        {
+            if (SetField(ref _isSaving, value))
+                SavingStateChanged?.Invoke(value);
+        }
+    }
     public bool HasSession => _session is not null;
     public string LogicalTable => _session?.LogicalTable ?? "-";
     public string SheetName => SelectedSheet?.SheetName ?? "-";
@@ -262,7 +273,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             return;
         }
         IsBusy = true;
+        IsSaving = true;
         StatusText = "正在原子保存并验证工作簿...";
+        Exception? saveFailure = null;
+        var externalMergeCompleted = false;
         try
         {
             var result = await Task.Run(_session.Save);
@@ -298,18 +312,27 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             {
                 IsMergeCompleted = true;
                 ExternalMergeExitCode = ExitCodes.Success;
-                ExternalMergeCompleted?.Invoke();
+                externalMergeCompleted = true;
             }
         }
         catch (Exception exception)
         {
             RecordFailure(exception);
-            ShowError(exception);
+            saveFailure = exception;
         }
         finally
         {
+            IsSaving = false;
             IsBusy = false;
         }
+
+        if (saveFailure is not null)
+        {
+            ShowError(saveFailure);
+            return;
+        }
+        if (externalMergeCompleted)
+            ExternalMergeCompleted?.Invoke();
     }
 
     private void ResolveSelected(object? parameter)

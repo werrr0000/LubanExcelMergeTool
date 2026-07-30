@@ -1288,42 +1288,42 @@ public sealed class LubanMergeCoordinator
         switch (edit)
         {
             case SetCellEdit setCell:
-            {
-                var (rowNumber, columnIndex) = CellReference.Parse(setCell.Address);
-                if (!analysisByColumn.TryGetValue(columnIndex, out var alignment))
                 {
-                    yield return setCell;
-                    yield break;
-                }
-                if (rowNumber == schemaMerge.TargetSchema.PrimaryVariableRowNumber ||
-                    rowNumber == schemaMerge.TargetSchema.TypeRowNumber)
-                {
-                    yield break;
-                }
-                if (!finalByIdentity.TryGetValue(alignment.Identity, out var resolvedField))
-                    yield break;
-                yield return setCell with
-                {
-                    Address = CellReference.Create(rowNumber, resolvedField.Field.ColumnIndex)
-                };
-                yield break;
-            }
-            case AppendRowEdit appendRow:
-            {
-                var cells = new List<CellWrite>();
-                foreach (var cell in appendRow.Cells)
-                {
-                    if (!analysisByColumn.TryGetValue(cell.ColumnIndex, out var alignment))
+                    var (rowNumber, columnIndex) = CellReference.Parse(setCell.Address);
+                    if (!analysisByColumn.TryGetValue(columnIndex, out var alignment))
                     {
-                        cells.Add(cell);
-                        continue;
+                        yield return setCell;
+                        yield break;
                     }
-                    if (finalByIdentity.TryGetValue(alignment.Identity, out var resolvedField))
-                        cells.Add(cell with { ColumnIndex = resolvedField.Field.ColumnIndex });
+                    if (rowNumber == schemaMerge.TargetSchema.PrimaryVariableRowNumber ||
+                        rowNumber == schemaMerge.TargetSchema.TypeRowNumber)
+                    {
+                        yield break;
+                    }
+                    if (!finalByIdentity.TryGetValue(alignment.Identity, out var resolvedField))
+                        yield break;
+                    yield return setCell with
+                    {
+                        Address = CellReference.Create(rowNumber, resolvedField.Field.ColumnIndex)
+                    };
+                    yield break;
                 }
-                yield return appendRow with { Cells = cells };
-                yield break;
-            }
+            case AppendRowEdit appendRow:
+                {
+                    var cells = new List<CellWrite>();
+                    foreach (var cell in appendRow.Cells)
+                    {
+                        if (!analysisByColumn.TryGetValue(cell.ColumnIndex, out var alignment))
+                        {
+                            cells.Add(cell);
+                            continue;
+                        }
+                        if (finalByIdentity.TryGetValue(alignment.Identity, out var resolvedField))
+                            cells.Add(cell with { ColumnIndex = resolvedField.Field.ColumnIndex });
+                    }
+                    yield return appendRow with { Cells = cells };
+                    yield break;
+                }
             default:
                 yield return edit;
                 yield break;

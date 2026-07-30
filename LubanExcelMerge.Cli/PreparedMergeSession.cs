@@ -205,7 +205,7 @@ public sealed class PreparedMergeSession
         : string.Join(", ", Sheets.Select(sheet => sheet.SheetName));
     public string KeyName => Sheets.Select(sheet => sheet.KeyName).Distinct(StringComparer.Ordinal).ToArray() switch
     {
-        [var key] => key,
+    [var key] => key,
         _ => "按工作表"
     };
     public string LocalPath { get; }
