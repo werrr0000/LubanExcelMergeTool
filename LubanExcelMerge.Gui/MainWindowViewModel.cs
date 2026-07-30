@@ -304,6 +304,8 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             {
                 LubanExcelMerge.OpenXml.WorkbookRecalculationStatus.Completed =>
                     $"保存完成并已由 {result.RecalculationProvider} 完整重算{validationText}：{result.OutputPath}",
+                LubanExcelMerge.OpenXml.WorkbookRecalculationStatus.DeferredAfterRecalculationFailure =>
+                    $"保存完成：{result.RecalculationProvider} 重算未完成，已安全回退并标记下次打开完整重算{validationText}：{result.OutputPath}",
                 LubanExcelMerge.OpenXml.WorkbookRecalculationStatus.SourceCachePreservedUnverified =>
                     $"保存完成：已保留公式缓存并标记下次完整重算（缓存未验证）{validationText}：{result.OutputPath}",
                 _ => $"保存完成{validationText}：{result.OutputPath}"

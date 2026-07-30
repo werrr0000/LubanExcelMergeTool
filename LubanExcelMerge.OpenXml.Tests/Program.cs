@@ -25,7 +25,10 @@ try
         ("auto mode recalculates only affected formulas", () => AutoModeRecalculatesAffectedFormula(sourcePath, testRoot)),
         ("composite recalculator prefers WPS and falls back to Excel", CompositeRecalculatorSelectsProvider),
         ("always mode recalculates even without edits", () => AlwaysModeRecalculatesWithoutEdits(sourcePath, testRoot)),
-        ("missing Excel preserves existing output", () => MissingExcelPreservesOutput(sourcePath, testRoot)),
+        ("auto mode uses a shorter default timeout", AutoModeUsesShorterDefaultTimeout),
+        ("always mode without Office preserves existing output", () => AlwaysModeWithoutOfficePreservesOutput(sourcePath, testRoot)),
+        ("auto mode without Office safely defers recalculation", () => AutoModeWithoutOfficeDefersRecalculation(sourcePath, testRoot)),
+        ("auto mode failure safely defers recalculation", () => AutoRecalculationFailureDefers(sourcePath, testRoot)),
         ("recalculation failure preserves existing output", () => RecalculationFailurePreservesOutput(sourcePath, testRoot)),
         ("archive safety limits are enforced", () => ArchiveLimitsAreEnforced(sourcePath))
     };
@@ -280,7 +283,13 @@ static void AlwaysModeRecalculatesWithoutEdits(string sourcePath, string testRoo
     Equal(WorkbookRecalculationStatus.Completed, result.RecalculationStatus);
 }
 
-static void MissingExcelPreservesOutput(string sourcePath, string testRoot)
+static void AutoModeUsesShorterDefaultTimeout()
+{
+    Equal(TimeSpan.FromSeconds(30), new WorkbookSaveOptions(WorkbookRecalculationMode.Auto).EffectiveTimeout);
+    Equal(TimeSpan.FromMinutes(2), new WorkbookSaveOptions(WorkbookRecalculationMode.Always).EffectiveTimeout);
+}
+
+static void AlwaysModeWithoutOfficePreservesOutput(string sourcePath, string testRoot)
 {
     var outputPath = Path.Combine(testRoot, "missing-excel.xlsx");
     File.Copy(sourcePath, outputPath);
@@ -290,9 +299,44 @@ static void MissingExcelPreservesOutput(string sourcePath, string testRoot)
         sourcePath,
         outputPath,
         new WorkbookEdit[] { new SetCellEdit("Data", "C4", new CellPayload(CellValueKind.String, "Changed")) },
-        new WorkbookSaveOptions(WorkbookRecalculationMode.Auto, FormulaMayBeAffected: true)));
+        new WorkbookSaveOptions(WorkbookRecalculationMode.Always, FormulaMayBeAffected: true)));
     Equal(before, HashFile(outputPath));
     Equal(0, Directory.GetFiles(testRoot, ".missing-excel.xlsx.*.tmp.xlsx").Length);
+}
+
+static void AutoModeWithoutOfficeDefersRecalculation(string sourcePath, string testRoot)
+{
+    var outputPath = Path.Combine(testRoot, "auto-missing-office.xlsx");
+    var before = HashFile(sourcePath);
+    var result = new AtomicWorkbookSaver(recalculator: new FakeWorkbookRecalculator(false)).Save(
+        sourcePath,
+        outputPath,
+        new WorkbookEdit[] { new SetCellEdit("Data", "C4", new CellPayload(CellValueKind.String, "Changed")) },
+        new WorkbookSaveOptions(WorkbookRecalculationMode.Auto, FormulaMayBeAffected: true));
+
+    Equal(WorkbookRecalculationStatus.DeferredAfterRecalculationFailure, result.RecalculationStatus);
+    True(result.RecalculationWarning is not null);
+    True(before != HashFile(outputPath));
+    Equal("Changed", new OpenXmlWorkbookReader().Read(outputPath).GetSheet("Data").GetCell("C4")!.Payload.RawValue);
+}
+
+static void AutoRecalculationFailureDefers(string sourcePath, string testRoot)
+{
+    var outputPath = Path.Combine(testRoot, "auto-failed-recalculation.xlsx");
+    var recalculator = new FakeWorkbookRecalculator(
+        true,
+        _ => throw new InvalidOperationException("wrapper", new TimeoutException("test timeout")));
+
+    var result = new AtomicWorkbookSaver(recalculator: recalculator).Save(
+        sourcePath,
+        outputPath,
+        new WorkbookEdit[] { new SetCellEdit("Data", "C4", new CellPayload(CellValueKind.String, "Changed")) },
+        new WorkbookSaveOptions(WorkbookRecalculationMode.Auto, FormulaMayBeAffected: true));
+
+    Equal(WorkbookRecalculationStatus.DeferredAfterRecalculationFailure, result.RecalculationStatus);
+    Equal("test timeout", result.RecalculationWarning);
+    Equal("Test Office", result.RecalculationProvider);
+    Equal("Changed", new OpenXmlWorkbookReader().Read(outputPath).GetSheet("Data").GetCell("C4")!.Payload.RawValue);
 }
 
 static void RecalculationFailurePreservesOutput(string sourcePath, string testRoot)

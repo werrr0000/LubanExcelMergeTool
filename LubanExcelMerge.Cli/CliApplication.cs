@@ -41,6 +41,8 @@ public static class CliApplication
             {
                 LubanExcelMerge.OpenXml.WorkbookRecalculationStatus.Completed =>
                     $"公式状态：已由 {result.RecalculationProvider} 完整重算。",
+                LubanExcelMerge.OpenXml.WorkbookRecalculationStatus.DeferredAfterRecalculationFailure =>
+                    $"公式状态：{result.RecalculationProvider} 重算未完成，已安全回退并标记下次打开时完整重算。",
                 LubanExcelMerge.OpenXml.WorkbookRecalculationStatus.SourceCachePreservedUnverified =>
                     "公式状态：已保留来源缓存并标记下次打开时完整重算；当前缓存未验证。",
                 _ => "公式状态：本次合并不需要重新计算。"

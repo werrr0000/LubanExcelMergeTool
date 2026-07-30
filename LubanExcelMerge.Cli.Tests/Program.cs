@@ -1956,6 +1956,7 @@ static void DiagnosticLogRecordsSanitizedException(string testRoot)
         .Select(line => JsonSerializer.Deserialize<JsonElement>(line))
         .Single(entry => entry.GetProperty("event").GetString() == "exception");
     Equal(ExitCodes.UnsafeWorkbook, exceptionEntry.GetProperty("details").GetProperty("exitCode").GetInt32());
+    True(exceptionEntry.GetProperty("details").GetProperty("exceptionTypes").GetArrayLength() >= 1);
     True(exceptionEntry.GetProperty("details").GetProperty("stackTrace").GetString()!.Length > 0);
 }
 
