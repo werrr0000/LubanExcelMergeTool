@@ -11,6 +11,7 @@ public enum WorkbookRecalculationStatus
 {
     NotNeeded,
     SourceCachePreservedUnverified,
+    DeferredAfterRecalculationFailure,
     Completed
 }
 
@@ -19,7 +20,8 @@ public sealed record WorkbookSaveOptions(
     bool FormulaMayBeAffected = false,
     TimeSpan? RecalculationTimeout = null)
 {
-    public TimeSpan EffectiveTimeout => RecalculationTimeout ?? TimeSpan.FromMinutes(2);
+    public TimeSpan EffectiveTimeout => RecalculationTimeout ??
+        (RecalculationMode == WorkbookRecalculationMode.Auto ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(2));
 }
 
 public interface IWorkbookRecalculator

@@ -7,7 +7,8 @@ public sealed record WorkbookSaveResult(
     WorkbookRecalculationStatus RecalculationStatus,
     string? RecalculationProvider,
     bool ProjectValidationCompleted = false,
-    bool FullExportValidationCompleted = false);
+    bool FullExportValidationCompleted = false,
+    string? RecalculationWarning = null);
 
 public sealed class AtomicWorkbookSaver
 {
@@ -45,9 +46,15 @@ public sealed class AtomicWorkbookSaver
             $".{Path.GetFileName(absoluteOutput)}.{Guid.NewGuid():N}.tmp.xlsx");
         var shouldRecalculate = options.RecalculationMode == WorkbookRecalculationMode.Always ||
             options.RecalculationMode == WorkbookRecalculationMode.Auto && options.FormulaMayBeAffected;
+        string? recalculationWarning = null;
         if (shouldRecalculate && !_recalculator.IsAvailable)
-            throw new WorkbookRecalculationUnavailableException(
-                $"重算模式为 {options.RecalculationMode.ToString().ToLowerInvariant()}，但 {_recalculator.ProviderName} 的自动化接口不可用。");
+        {
+            var message = $"重算模式为 {options.RecalculationMode.ToString().ToLowerInvariant()}，但 {_recalculator.ProviderName} 的自动化接口不可用。";
+            if (options.RecalculationMode == WorkbookRecalculationMode.Always)
+                throw new WorkbookRecalculationUnavailableException(message);
+            shouldRecalculate = false;
+            recalculationWarning = message;
+        }
 
         var sourceSnapshot = _reader.Read(absoluteLocal);
         var sourceHashes = PackageIntegrity.HashParts(absoluteLocal);
@@ -71,14 +78,29 @@ public sealed class AtomicWorkbookSaver
             var recalculationStatus = options.FormulaMayBeAffected &&
                                       options.RecalculationMode == WorkbookRecalculationMode.Never
                 ? WorkbookRecalculationStatus.SourceCachePreservedUnverified
+                : recalculationWarning is not null
+                    ? WorkbookRecalculationStatus.DeferredAfterRecalculationFailure
                 : WorkbookRecalculationStatus.NotNeeded;
             if (shouldRecalculate)
             {
-                _recalculator.Recalculate(temporaryPath, options.EffectiveTimeout);
-                var recalculatedSnapshot = _reader.Read(temporaryPath);
-                ValidateRecalculatedCandidate(candidateSnapshot, recalculatedSnapshot);
-                candidateSnapshot = recalculatedSnapshot;
-                recalculationStatus = WorkbookRecalculationStatus.Completed;
+                try
+                {
+                    _recalculator.Recalculate(temporaryPath, options.EffectiveTimeout);
+                    var recalculatedSnapshot = _reader.Read(temporaryPath);
+                    ValidateRecalculatedCandidate(candidateSnapshot, recalculatedSnapshot);
+                    candidateSnapshot = recalculatedSnapshot;
+                    recalculationStatus = WorkbookRecalculationStatus.Completed;
+                }
+                catch (Exception exception) when (
+                    options.RecalculationMode == WorkbookRecalculationMode.Auto &&
+                    exception is TimeoutException or InvalidOperationException)
+                {
+                    recalculationWarning = GetInnermostMessage(exception);
+                    recalculationStatus = WorkbookRecalculationStatus.DeferredAfterRecalculationFailure;
+                    var fallbackSnapshot = _reader.Read(temporaryPath);
+                    ValidateCandidate(sourceSnapshot, fallbackSnapshot, edits, preserveFormulaCaches: true);
+                    candidateSnapshot = fallbackSnapshot;
+                }
             }
 
             ReplaceOutput(temporaryPath, absoluteOutput);
@@ -88,13 +110,24 @@ public sealed class AtomicWorkbookSaver
                 candidateSnapshot.Sheets.Count,
                 candidateSnapshot.Sheets.Sum(sheet => sheet.FormulaCount),
                 recalculationStatus,
-                recalculationStatus == WorkbookRecalculationStatus.Completed ? _recalculator.ProviderName : null);
+                recalculationStatus is WorkbookRecalculationStatus.Completed or WorkbookRecalculationStatus.DeferredAfterRecalculationFailure
+                    ? _recalculator.ProviderName
+                    : null,
+                RecalculationWarning: recalculationWarning);
         }
         finally
         {
             if (File.Exists(temporaryPath))
                 File.Delete(temporaryPath);
         }
+    }
+
+    private static string GetInnermostMessage(Exception exception)
+    {
+        var current = exception;
+        while (current.InnerException is not null)
+            current = current.InnerException;
+        return current.Message;
     }
 
     private static void ValidateCandidate(

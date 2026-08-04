@@ -121,6 +121,7 @@ public sealed class MergeDiagnosticLogger
             deletedRecords = result.DeletedRecords,
             formulaStatus = result.RecalculationStatus?.ToString(),
             formulaProvider = result.RecalculationProvider,
+            formulaWarning = result.RecalculationWarning,
             projectValidationCompleted = result.ProjectValidationCompleted,
             fullExportValidationCompleted = result.FullExportValidationCompleted,
             logicalTableUniquenessValidated = result.LogicalTableUniquenessValidated,
@@ -153,6 +154,7 @@ public sealed class MergeDiagnosticLogger
             formulaCount = result.FormulaCount,
             formulaStatus = result.RecalculationStatus.ToString(),
             formulaProvider = result.RecalculationProvider,
+            formulaWarning = result.RecalculationWarning,
             projectValidationCompleted = result.ProjectValidationCompleted,
             fullExportValidationCompleted = result.FullExportValidationCompleted,
             gitStaged,
@@ -182,8 +184,15 @@ public sealed class MergeDiagnosticLogger
             exitCode,
             exceptionType = exception.GetType().FullName,
             innerExceptionType = exception.InnerException?.GetType().FullName,
+            exceptionTypes = EnumerateExceptionChain(exception).Select(item => item.GetType().FullName),
             stackTrace = exception.StackTrace
         });
+    }
+
+    private static IEnumerable<Exception> EnumerateExceptionChain(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+            yield return current;
     }
 
     private void Write(string eventName, object details)

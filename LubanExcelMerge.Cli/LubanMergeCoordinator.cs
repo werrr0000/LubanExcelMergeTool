@@ -22,7 +22,8 @@ public sealed record MergeRunResult(
     bool FullExportValidationCompleted,
     IReadOnlyList<string> IgnoredFields,
     bool LogicalTableUniquenessValidated,
-    MergePreparationTimings PreparationTimings)
+    MergePreparationTimings PreparationTimings,
+    string? RecalculationWarning = null)
 {
     public bool Succeeded => Conflicts.Count == 0 && OutputPath is not null;
 }
@@ -88,7 +89,8 @@ public sealed class LubanMergeCoordinator
             saveResult.FullExportValidationCompleted,
             session.IgnoredFields,
             session.LogicalTableUniquenessValidated,
-            session.PreparationTimings);
+            session.PreparationTimings,
+            saveResult.RecalculationWarning);
     }
 
     public PreparedMergeSession Prepare(MergeCommandOptions options)
