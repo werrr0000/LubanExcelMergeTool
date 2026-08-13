@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>LubanExcelMerge</AssemblyName>
-    <Version>1.1.0</Version>
+    <Version>1.2.2</Version>
     <Product>Luban Excel Merge</Product>
     <Description>Luban Excel three-way merge command line tool</Description>
   </PropertyGroup>

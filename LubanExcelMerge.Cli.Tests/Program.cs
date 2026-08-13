@@ -35,7 +35,7 @@ if (args is ["--create-ui-fixture", var fixtureRoot])
     return 0;
 }
 
-if (args is ["--create-multi-sheet-ui-fixture", var multiSheetFixtureRoot])
+    if (args is ["--create-multi-sheet-ui-fixture", var multiSheetFixtureRoot])
 {
     var fixture = CreateScenario(multiSheetFixtureRoot);
     TestWorkbookFactory.CreateMultiSheet(
@@ -52,6 +52,24 @@ if (args is ["--create-multi-sheet-ui-fixture", var multiSheetFixtureRoot])
         ("关卡参数", new[] { new[] { "2001", "远端普通", "1" }, new[] { "2002", "困难难度", "3" } }));
     Console.WriteLine(string.Join(Environment.NewLine, CreateArguments(fixture)));
     return 0;
+}
+
+if (args is ["--metadata-row-tests"])
+{
+    var focusedRoot = Path.Combine(Path.GetTempPath(), "LubanExcelMerge.Cli.Tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(focusedRoot);
+    try
+    {
+        InsertedMetadataRowRequiresReview(focusedRoot);
+        DeletedMetadataRowRequiresReview(focusedRoot);
+        Console.WriteLine("PASS metadata row insertion and deletion");
+        return 0;
+    }
+    finally
+    {
+        if (Directory.Exists(focusedRoot))
+            Directory.Delete(focusedRoot, recursive: true);
+    }
 }
 
 var testRoot = Path.Combine(Path.GetTempPath(), "LubanExcelMerge.Cli.Tests", Guid.NewGuid().ToString("N"));
@@ -72,12 +90,18 @@ try
         ("stager discovers nested ConfigLuban repository", () => GitStagerDiscoversNestedConfigRepository(testRoot)),
         ("real Git LFS mergetool completes four-file protocol", () => GitLfsMergetoolEndToEnd(testRoot)),
         ("non-conflicting four-file merge succeeds", () => NonConflictingMerge(testRoot)),
-        ("first automatic edit maps to comparison grid", () => FirstAutomaticEditMapsToComparisonGrid(testRoot)),
+        ("mode one merges the single record by field", () => ModeOneMergesSingleRecord(testRoot)),
+        ("mode one field conflict requires resolution", () => ModeOneFieldConflictRequiresResolution(testRoot)),
+        ("mode one rejects multiple data records", () => ModeOneRejectsMultipleRecords(testRoot)),
+        ("automatic merge results include LOCAL and REMOTE changes", () => AutomaticMergeResultsIncludeBothSides(testRoot)),
+        ("serialized blank rows and columns do not displace additions", () => BlankLayoutDoesNotDisplaceAdditions(testRoot)),
         ("large table preparation and navigation stay bounded", () => LargeTablePerformanceSmoke(testRoot)),
         ("multi-sheet automatic edits save every sheet", () => MultiSheetAutomaticMerge(testRoot)),
         ("multi-sheet save requires every conflict resolved", () => MultiSheetRequiresEveryConflictResolved(testRoot)),
         ("multi-sheet names and order must match", () => MultiSheetNamesMustMatch(testRoot)),
         ("metadata change requires review and saves selected value", () => MetadataChangeRequiresReview(testRoot)),
+        ("inserted metadata row requires review and shifts data", () => InsertedMetadataRowRequiresReview(testRoot)),
+        ("deleted metadata row requires review and shifts data", () => DeletedMetadataRowRequiresReview(testRoot)),
         ("multi-sheet metadata reviews gate whole workbook save", () => MultiSheetMetadataChangesGateSave(testRoot)),
         ("multi-sheet REMOTE appended fields save every sheet", () => MultiSheetRemoteAppendedFieldsSaveEverySheet(testRoot)),
         ("REMOTE-only appended field merges metadata and data", () => RemoteOnlyAppendedFieldMerges(testRoot)),
@@ -172,6 +196,20 @@ static void True(bool value)
 {
     if (!value)
         throw new InvalidOperationException("Expected true, got false.");
+}
+
+static void Throws<TException>(Action action) where TException : Exception
+{
+    try
+    {
+        action();
+    }
+    catch (TException)
+    {
+        return;
+    }
+
+    throw new InvalidOperationException($"Expected {typeof(TException).Name}.");
 }
 
 static string HashFile(string path)
@@ -548,17 +586,23 @@ static void NonConflictingMerge(string testRoot)
     True(output.ToString().Contains("删除记录=1", StringComparison.Ordinal));
 }
 
-static void FirstAutomaticEditMapsToComparisonGrid(string testRoot)
+static void AutomaticMergeResultsIncludeBothSides(string testRoot)
 {
     var scenario = CreateScenario(Path.Combine(testRoot, "automatic-edit-location"));
     TestWorkbookFactory.Create(scenario.BasePath, new[] { new[] { "1", "base-a", "base-b" } });
-    TestWorkbookFactory.Create(scenario.LocalPath, new[] { new[] { "1", "base-a", "base-b" } });
+    TestWorkbookFactory.Create(scenario.LocalPath, new[] { new[] { "1", "local-a", "base-b" } });
     TestWorkbookFactory.Create(scenario.RemotePath, new[] { new[] { "1", "base-a", "remote-b" } });
 
     var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
 
     Equal(1, session.AutomaticEditCount);
+    Equal(2, session.AutomaticMergeCount);
+    Equal(2, session.ProcessedMergeCount);
     True(session.CanSave);
+    var mergeLocations = session.Sheets.Single().AutomaticMergeLocations;
+    Equal(2, mergeLocations.Count);
+    Equal("C4", mergeLocations[0].DisplayLocation);
+    Equal("D4", mergeLocations[1].DisplayLocation);
     var location = session.Sheets.Single().FirstAutomaticEditLocation;
     True(location is not null);
     Equal(3, location!.RowIndex);
@@ -575,6 +619,11 @@ static void FirstAutomaticEditMapsToComparisonGrid(string testRoot)
     True(deleteLocation is not null);
     Equal(3, deleteLocation!.RowIndex);
     Equal(1, deleteLocation.ColumnIndex);
+    Equal(3, deleteSession.AutomaticMergeCount);
+    Equal(0, deleteSession.ProcessedMergeCount);
+    True(deleteSession.Sheets.Single().AutomaticMergeLocations
+        .Select(item => item.DisplayLocation)
+        .SequenceEqual(new[] { "B4", "C4", "D4" }, StringComparer.Ordinal));
 
     var appendScenario = CreateScenario(Path.Combine(testRoot, "automatic-append-location"));
     TestWorkbookFactory.Create(appendScenario.BasePath, Array.Empty<string[]>());
@@ -586,6 +635,116 @@ static void FirstAutomaticEditMapsToComparisonGrid(string testRoot)
     True(appendLocation is not null);
     Equal(3, appendLocation!.RowIndex);
     Equal(1, appendLocation.ColumnIndex);
+    Equal(3, appendSession.AutomaticMergeCount);
+    Equal(0, appendSession.ProcessedMergeCount);
+
+    var localDeleteScenario = CreateScenario(Path.Combine(testRoot, "automatic-local-delete-location"));
+    TestWorkbookFactory.Create(localDeleteScenario.BasePath, new[] { new[] { "3", "delete-me", "same" } });
+    TestWorkbookFactory.Create(localDeleteScenario.LocalPath, Array.Empty<string[]>());
+    TestWorkbookFactory.Create(localDeleteScenario.RemotePath, new[] { new[] { "3", "delete-me", "same" } });
+    var localDeleteSession = new LubanMergeCoordinator().Prepare(
+        CommandLineParser.Parse(CreateArguments(localDeleteScenario)));
+    Equal(0, localDeleteSession.AutomaticEditCount);
+    Equal(3, localDeleteSession.AutomaticMergeCount);
+    Equal(0, localDeleteSession.ProcessedMergeCount);
+}
+
+static void ModeOneMergesSingleRecord(string testRoot)
+{
+    var scenario = CreateScenario(Path.Combine(testRoot, "mode-one-automatic"), mode: "one");
+    TestWorkbookFactory.Create(scenario.BasePath, new[] { new[] { "1", "base", "same" } });
+    TestWorkbookFactory.Create(scenario.LocalPath, new[] { new[] { "1", "local", "same" } });
+    TestWorkbookFactory.Create(scenario.RemotePath, new[] { new[] { "1", "local", "remote" } });
+
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+    Equal(0, session.RemainingConflicts);
+    Equal(1, session.ChangedCells);
+    session.Save();
+
+    var merged = new OpenXmlWorkbookReader().Read(scenario.OutputPath).GetSheet("Data");
+    Equal("local", merged.GetCell("C4")!.Payload.RawValue);
+    Equal("remote", merged.GetCell("D4")!.Payload.RawValue);
+}
+
+static void ModeOneFieldConflictRequiresResolution(string testRoot)
+{
+    var scenario = CreateScenario(Path.Combine(testRoot, "mode-one-conflict"), mode: "one");
+    TestWorkbookFactory.Create(scenario.BasePath, new[] { new[] { "1", "base", "same" } });
+    TestWorkbookFactory.Create(scenario.LocalPath, new[] { new[] { "1", "local", "same" } });
+    TestWorkbookFactory.Create(scenario.RemotePath, new[] { new[] { "1", "remote", "same" } });
+
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+    Equal(1, session.RemainingConflicts);
+    Equal(Core.MergeConflictKind.CellChangedDifferently, session.Conflicts.Single().Conflict.Kind);
+    session.Conflicts.Single().Resolve(MergeChoice.Remote);
+    session.Save();
+
+    Equal("remote", new OpenXmlWorkbookReader().Read(scenario.OutputPath)
+        .GetSheet("Data").GetCell("C4")!.Payload.RawValue);
+}
+
+static void ModeOneRejectsMultipleRecords(string testRoot)
+{
+    var scenario = CreateScenario(Path.Combine(testRoot, "mode-one-multiple"), mode: "one");
+    TestWorkbookFactory.Create(scenario.BasePath, new[] { new[] { "1", "base", "same" } });
+    TestWorkbookFactory.Create(scenario.LocalPath, new[]
+    {
+        new[] { "1", "local", "same" },
+        new[] { "2", "unexpected", "row" }
+    });
+    TestWorkbookFactory.Create(scenario.RemotePath, new[] { new[] { "1", "remote", "same" } });
+
+    Throws<UnsafeWorkbookException>(() => new LubanMergeCoordinator().Prepare(
+        CommandLineParser.Parse(CreateArguments(scenario))));
+}
+
+static void BlankLayoutDoesNotDisplaceAdditions(string testRoot)
+{
+    var rowScenario = CreateScenario(Path.Combine(testRoot, "blank-layout-row"));
+    TestWorkbookFactory.Create(rowScenario.BasePath, new[] { new[] { "1", "a", "b" } });
+    TestWorkbookFactory.Create(rowScenario.LocalPath, new[] { new[] { "1", "a", "b" } });
+    TestWorkbookFactory.Create(rowScenario.RemotePath, new[]
+    {
+        new[] { "1", "a", "b" },
+        new[] { "2", "new-a", "new-b" }
+    });
+    AddSerializedBlankCell(rowScenario.LocalPath, "Data", "B1000", "1");
+
+    var rowSession = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(rowScenario)));
+    rowSession.Save();
+    Equal("2", ReadCellValue(rowScenario.OutputPath, "Data", "B5"));
+    Equal("new-a", ReadCellValue(rowScenario.OutputPath, "Data", "C5"));
+    True(new OpenXmlWorkbookReader().Read(rowScenario.OutputPath).GetSheet("Data").GetCell("B1000") is null);
+    True(ReadCellValue(rowScenario.OutputPath, "Data", "B1001") is null);
+
+    var columnScenario = CreateScenario(Path.Combine(testRoot, "blank-layout-column"));
+    TestWorkbookFactory.CreateWithSchema(
+        columnScenario.BasePath,
+        new[] { "Id", "A", "B" },
+        new[] { "string", "string", "string" },
+        new[] { new[] { "1", "a", "b" } });
+    TestWorkbookFactory.CreateWithSchema(
+        columnScenario.LocalPath,
+        new[] { "Id", "A", "B" },
+        new[] { "string", "string", "string" },
+        new[] { new[] { "1", "a", "b" } });
+    TestWorkbookFactory.CreateWithSchema(
+        columnScenario.RemotePath,
+        new[] { "Id", "A", "B", "RemoteField" },
+        new[] { "string", "string", "string", "string" },
+        new[] { new[] { "1", "a", "b", "remote" } });
+    AddSerializedBlankCell(columnScenario.LocalPath, "Data", "E4", "1");
+    AddSerializedBlankCell(columnScenario.LocalPath, "Data", "Z1000", "1");
+
+    var columnSession = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(columnScenario)));
+    Equal(5, columnSession.Comparison.ColumnHeaders.Count);
+    columnSession.Save();
+    Equal(4, ParseWorkbookSchema(columnScenario.OutputPath).FindField("RemoteField")!.ColumnIndex);
+    Equal("remote", ReadCellValue(columnScenario.OutputPath, "Data", "E4"));
+    var columnOutput = new OpenXmlWorkbookReader().Read(columnScenario.OutputPath).GetSheet("Data");
+    Equal<string?>(null, columnOutput.GetCell("E4")!.StyleIndex);
+    True(columnOutput.GetCell("Z1000") is null);
+    True(ReadCellValue(columnScenario.OutputPath, "Data", "AA4") is null);
 }
 
 static void LargeTablePerformanceSmoke(string testRoot)
@@ -618,10 +777,11 @@ static void LargeTablePerformanceSmoke(string testRoot)
     var tableCreationMilliseconds = stopwatch.ElapsedMilliseconds;
 
     stopwatch.Restart();
-    var locations = session.Sheets.Single().AutomaticEditLocations;
+    var locations = session.Sheets.Single().AutomaticMergeLocations;
     var locationIndexMilliseconds = stopwatch.ElapsedMilliseconds;
 
     Equal(40, session.AutomaticEditCount);
+    Equal(40, session.AutomaticMergeCount);
     True(tables.All(table => table.Rows.Count == recordCount + 3));
     Equal(40, locations.Count);
     True(observedPreparationMilliseconds < 30_000);
@@ -651,14 +811,16 @@ static void MultiSheetAutomaticMerge(string testRoot)
     var prepared = new LubanMergeCoordinator().Prepare(
         CommandLineParser.Parse(CreateArguments(scenario)));
     var automaticLocations = prepared.Sheets
-        .SelectMany(sheet => sheet.AutomaticEditLocations.Select(location =>
+        .SelectMany(sheet => sheet.AutomaticMergeLocations.Select(location =>
             (sheet.SheetName, Location: location)))
         .ToArray();
-    Equal(2, automaticLocations.Length);
+    Equal(3, automaticLocations.Length);
     Equal("Alpha", automaticLocations[0].SheetName);
-    Equal("D4", automaticLocations[0].Location.DisplayLocation);
-    Equal("Beta", automaticLocations[1].SheetName);
+    Equal("C4", automaticLocations[0].Location.DisplayLocation);
+    Equal("Alpha", automaticLocations[1].SheetName);
     Equal("D4", automaticLocations[1].Location.DisplayLocation);
+    Equal("Beta", automaticLocations[2].SheetName);
+    Equal("D4", automaticLocations[2].Location.DisplayLocation);
     using var output = new StringWriter();
     using var error = new StringWriter();
 
@@ -768,6 +930,8 @@ static void MetadataChangeRequiresReview(string testRoot)
     conflict.Resolve(MergeChoice.Remote);
     Equal("远端字段说明",
         session.Comparison.CreateTable(MergeGridSide.Merged).Rows[1].Cells[3].DisplayValue);
+    Equal(MergeGridCellState.Modified,
+        session.Comparison.CreateTable(MergeGridSide.Merged).Rows[1].Cells[3].State);
     session.Save();
     Equal("远端字段说明", ReadCellValue(scenario.OutputPath, "Data", "D2"));
 }
@@ -1353,6 +1517,18 @@ static void SetWorkbookCell(string path, string sheetName, string address, strin
             new SetCellEdit(sheetName, address, new Core.CellPayload(Core.CellValueKind.String, value))
         });
 
+static void AddSerializedBlankCell(
+    string path,
+    string sheetName,
+    string address,
+    string? styleIndex = null) =>
+    new OpenXmlWorkbookEditor().Apply(
+        path,
+        new WorkbookEdit[]
+        {
+            new SetCellEdit(sheetName, address, Core.CellPayload.Blank, styleIndex)
+        });
+
 static void SetWorkbookFormula(
     string path,
     string sheetName,
@@ -1403,6 +1579,8 @@ static void InteractiveCellResolution(string testRoot)
     var session = new LubanMergeCoordinator().Prepare(options);
     Equal(1, session.RemainingConflicts);
     Equal(1, session.AutomaticEditCount);
+    Equal(1, session.AutomaticMergeCount);
+    Equal(1, session.ProcessedMergeCount);
     True(!session.CanSave);
     Equal("old-a", session.Conflicts[0].BaseValue);
     Equal("local-a", session.Conflicts[0].LocalValue);
@@ -1417,14 +1595,26 @@ static void InteractiveCellResolution(string testRoot)
     var initialMergedRow = initialMergedGrid.Rows.Single(row => row.RecordKey == "1");
     Equal(MergeGridCellState.Conflict, baseRow.Cells[2].State);
     Equal(MergeGridCellState.Modified, remoteRow.Cells[3].State);
+    Equal(MergeGridCellState.Normal, baseRow.Cells[3].State);
+    Equal(MergeGridCellState.Modified, initialMergedRow.Cells[3].State);
     Equal("local-a", initialMergedRow.Cells[2].DisplayValue);
     Equal("remote-b", initialMergedRow.Cells[3].DisplayValue);
     Equal(MergeGridCellState.Conflict, initialMergedRow.Cells[2].State);
 
     session.Conflicts[0].Resolve(MergeChoice.Remote);
     True(session.CanSave);
+    Equal(2, session.ProcessedMergeCount);
+    True(session.Sheets.Single().ProcessedMergeLocations
+        .Select(item => item.DisplayLocation)
+        .SequenceEqual(new[] { "C4", "D4" }, StringComparer.Ordinal));
+    var resolvedBaseRow = session.Comparison.CreateTable(MergeGridSide.Base).Rows.Single(row => row.RecordKey == "1");
+    var resolvedLocalRow = session.Comparison.CreateTable(MergeGridSide.Local).Rows.Single(row => row.RecordKey == "1");
+    var resolvedRemoteRow = session.Comparison.CreateTable(MergeGridSide.Remote).Rows.Single(row => row.RecordKey == "1");
     var resolvedMergedRow = session.Comparison.CreateTable(MergeGridSide.Merged).Rows.Single(row => row.RecordKey == "1");
     Equal("remote-a", resolvedMergedRow.Cells[2].DisplayValue);
+    Equal(MergeGridCellState.Modified, resolvedBaseRow.Cells[2].State);
+    Equal(MergeGridCellState.Modified, resolvedLocalRow.Cells[2].State);
+    Equal(MergeGridCellState.Modified, resolvedRemoteRow.Cells[2].State);
     Equal(MergeGridCellState.Modified, resolvedMergedRow.Cells[2].State);
     session.Save();
     var rows = ReadDataRows(scenario.OutputPath);
@@ -1433,6 +1623,72 @@ static void InteractiveCellResolution(string testRoot)
 
     session.Conflicts[0].ClearResolution();
     True(!session.CanSave);
+    Equal(1, session.ProcessedMergeCount);
+    Equal(MergeGridCellState.Conflict,
+        session.Comparison.CreateTable(MergeGridSide.Merged).Rows.Single(row => row.RecordKey == "1").Cells[2].State);
+}
+
+static void InsertedMetadataRowRequiresReview(string testRoot)
+{
+    var scenario = CreateScenario(Path.Combine(testRoot, "metadata-row-insert"));
+    var records = new[] { new[] { "1", "same-a", "same-b" } };
+    TestWorkbookFactory.Create(scenario.BasePath, records);
+    TestWorkbookFactory.Create(scenario.LocalPath, records);
+    TestWorkbookFactory.Create(scenario.RemotePath, records);
+    new OpenXmlWorkbookEditor().Apply(scenario.RemotePath, new WorkbookEdit[]
+    {
+        new ReplaceMetadataRowsEdit("Data", 1, 3, new[]
+        {
+            MetadataRow("##var", "Id", "A", "B"),
+            MetadataRow("##", "编号", "新增说明", "字段B"),
+            MetadataRow("##", "编号", "字段A", "字段B"),
+            MetadataRow("##type", "string", "string", "string")
+        })
+    });
+
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+    Equal(1, session.MetadataChangeCount);
+    Equal(1, session.RemainingConflicts);
+    True(session.Comparison.CreateTable(MergeGridSide.Remote).Rows
+        .Take(4)
+        .SelectMany(row => row.Cells)
+        .Any(cell => cell.State == MergeGridCellState.Metadata));
+    session.Conflicts.Single().Resolve(MergeChoice.Remote);
+    session.Save();
+    Equal("新增说明", ReadCellValue(scenario.OutputPath, "Data", "C2"));
+    Equal("1", ReadCellValue(scenario.OutputPath, "Data", "B5"));
+
+    static RowWrite MetadataRow(params string[] values) => new(values
+        .Select((value, index) => new CellWrite(index, new Core.CellPayload(Core.CellValueKind.String, value)))
+        .ToArray());
+}
+
+static void DeletedMetadataRowRequiresReview(string testRoot)
+{
+    var scenario = CreateScenario(Path.Combine(testRoot, "metadata-row-delete"));
+    var records = new[] { new[] { "1", "same-a", "same-b" } };
+    TestWorkbookFactory.Create(scenario.BasePath, records);
+    TestWorkbookFactory.Create(scenario.LocalPath, records);
+    TestWorkbookFactory.Create(scenario.RemotePath, records);
+    new OpenXmlWorkbookEditor().Apply(scenario.RemotePath, new WorkbookEdit[]
+    {
+        new ReplaceMetadataRowsEdit("Data", 1, 3, new[]
+        {
+            MetadataRow("##var", "Id", "A", "B"),
+            MetadataRow("##type", "string", "string", "string")
+        })
+    });
+
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+    Equal(1, session.RemainingConflicts);
+    session.Conflicts.Single().Resolve(MergeChoice.Remote);
+    session.Save();
+    Equal("##type", ReadCellValue(scenario.OutputPath, "Data", "A2"));
+    Equal("1", ReadCellValue(scenario.OutputPath, "Data", "B3"));
+
+    static RowWrite MetadataRow(params string[] values) => new(values
+        .Select((value, index) => new CellWrite(index, new Core.CellPayload(Core.CellValueKind.String, value)))
+        .ToArray());
 }
 
 static void InteractiveDeleteModifyResolution(string testRoot)
@@ -2161,7 +2417,7 @@ static void EqualExit(int expected, int actual, StringWriter error)
         throw new InvalidOperationException($"Expected exit {expected}, got {actual}. Error: {error}");
 }
 
-static TestScenario CreateScenario(string root, string index = "Id")
+static TestScenario CreateScenario(string root, string index = "Id", string mode = "map")
 {
     var repository = CreateRepository(root);
     var dataRoot = Path.Combine(repository, "ConfigLuban", "Datas");
@@ -2170,7 +2426,7 @@ static TestScenario CreateScenario(string root, string index = "Id")
         Path.Combine(dataRoot, "__tables__.csv"),
         "##var,full_name,value_type,read_schema_from_file,input,index,mode,group\n" +
         "##,说明,,,,,,\n" +
-        $",TbTest,Test,TRUE,Test.xlsx,{index},map,c\n",
+        $",TbTest,Test,TRUE,Test.xlsx,{index},{mode},c\n",
         new UTF8Encoding(false));
     var versions = Path.Combine(root, "versions");
     Directory.CreateDirectory(versions);

@@ -42,7 +42,7 @@
                     </TextBlock>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding AutomaticEditCount, StringFormat=自动 {0}}" Foreground="#9ED7C0" Margin="0,0,18,0" />
+                    <TextBlock Text="{Binding ProcessedMergeCount, StringFormat=已处理 {0}}" Foreground="#9ED7C0" Margin="0,0,18,0" />
                     <TextBlock Text="{Binding ResolvedCount, StringFormat=已解决 {0}}" Foreground="#93C5FD" Margin="0,0,18,0" />
                     <TextBlock Text="{Binding RemainingCount, StringFormat=未解决 {0}}" Foreground="#FFB4AB" FontWeight="SemiBold" />
                 </StackPanel>
@@ -258,24 +258,38 @@
             </Border>
         </Grid>
 
-        <StatusBar Grid.Row="4" Background="#202B33" Foreground="White" Padding="8,3">
-            <StatusBarItem HorizontalContentAlignment="Stretch">
-                <Button Command="{Binding NavigateAutomaticEditCommand}"
-                        Background="Transparent"
-                        BorderThickness="0"
-                        Foreground="White"
-                        Padding="0"
-                        Cursor="Hand"
-                        FocusVisualStyle="{x:Null}"
-                        HorizontalContentAlignment="Left"
-                        ToolTip="定位下一处自动编辑（循环）"
-                        AutomationProperties.Name="循环定位自动编辑">
-                    <TextBlock Text="{Binding StatusText}" TextTrimming="CharacterEllipsis" />
-                </Button>
-            </StatusBarItem>
-            <Separator />
-            <StatusBarItem HorizontalAlignment="Right">
-                <TextBlock Text="{Binding ConflictCount, StringFormat=冲突总数 {0}}" />
+        <StatusBar Grid.Row="4" Background="#202B33" Foreground="White" Padding="10,4" MinHeight="42">
+            <StatusBarItem HorizontalContentAlignment="Stretch" Padding="0">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="{Binding ProcessedMergeSummary}"
+                               Foreground="#F4F7F9"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               ToolTip="{Binding StatusText}" />
+                    <Button Grid.Column="1"
+                            Width="116"
+                            Margin="16,0"
+                            Command="{Binding NavigateAutomaticEditCommand}"
+                            Background="#E8F2FA"
+                            BorderBrush="#9EBFD8"
+                            Foreground="#174F68"
+                            FontWeight="SemiBold"
+                            Content="查看结果"
+                            ToolTip="逐个查看所有蓝色的已处理结果"
+                            AutomationProperties.Name="查看已处理结果" />
+                    <TextBlock Grid.Column="2"
+                               Text="{Binding ConflictCount, StringFormat=冲突总数 {0}}"
+                               Foreground="#F4F7F9"
+                               HorizontalAlignment="Right"
+                               VerticalAlignment="Center" />
+                </Grid>
             </StatusBarItem>
         </StatusBar>
     </Grid>

@@ -19,6 +19,9 @@ try
         ("cell references round trip", CellReferencesRoundTrip),
         ("minimal edit preserves style and untouched formula", () => MinimalEditPreservesWorkbook(sourcePath, testRoot)),
         ("row append and delete produce reopenable output", () => AppendAndDeleteRows(sourcePath, testRoot)),
+        ("metadata replacement shifts following data rows", () => MetadataReplacementShiftsRows(sourcePath, testRoot)),
+        ("styled blank rows do not displace appended data", () => StyledBlankRowsDoNotDisplaceAppend(sourcePath, testRoot)),
+        ("cleanup removes empty formatting without losing formulas", () => CleanupEmptyFormattingPreservesContent(sourcePath, testRoot)),
         ("no-op save is byte-for-byte identical", () => NoOpSaveIsByteIdentical(sourcePath, testRoot)),
         ("failed save preserves existing output", () => FailedSavePreservesOutput(sourcePath, testRoot)),
         ("never mode preserves cache and marks full calculation", () => NeverModePreservesCache(sourcePath, testRoot)),
@@ -167,6 +170,89 @@ static void AppendAndDeleteRows(string sourcePath, string testRoot)
     Equal("3", output.GetCell("B5")!.Payload.RawValue);
     Equal("Added", output.GetCell("C5")!.Payload.RawValue);
     True(output.GetCell("D5") is null);
+}
+
+static void MetadataReplacementShiftsRows(string sourcePath, string testRoot)
+{
+    var outputPath = Path.Combine(testRoot, "metadata-rows.xlsx");
+    new AtomicWorkbookSaver().Save(sourcePath, outputPath, new WorkbookEdit[]
+    {
+        new ReplaceMetadataRowsEdit("Data", 1, 3, new[]
+        {
+            Row("##var"),
+            Row("##", "inserted"),
+            Row("##", "description"),
+            Row("##type")
+        })
+    });
+
+    var output = new OpenXmlWorkbookReader().Read(outputPath).GetSheet("Data");
+    Equal("inserted", output.GetCell("B2")!.Payload.RawValue);
+    Equal("description", output.GetCell("B3")!.Payload.RawValue);
+    Equal("1", output.GetCell("B5")!.Payload.RawValue);
+    True(output.GetCell("D5")!.Payload.FormulaText!.Contains("B5", StringComparison.Ordinal));
+
+    static RowWrite Row(params string[] values) => new(values
+        .Select((value, index) => new CellWrite(index, new CellPayload(CellValueKind.String, value)))
+        .ToArray());
+}
+
+static void StyledBlankRowsDoNotDisplaceAppend(string sourcePath, string testRoot)
+{
+    var styledSourcePath = Path.Combine(testRoot, "styled-blank-row-source.xlsx");
+    var outputPath = Path.Combine(testRoot, "styled-blank-row-output.xlsx");
+    File.Copy(sourcePath, styledSourcePath);
+    new OpenXmlWorkbookEditor().Apply(styledSourcePath, new WorkbookEdit[]
+    {
+        new SetCellEdit("Data", "B1000", CellPayload.Blank, "2")
+    });
+
+    new AtomicWorkbookSaver().Save(styledSourcePath, outputPath, new WorkbookEdit[]
+    {
+        new AppendRowEdit("Data", new[]
+        {
+            new CellWrite(1, new CellPayload(CellValueKind.Number, "3")),
+            new CellWrite(2, new CellPayload(CellValueKind.String, "Added"))
+        })
+    });
+
+    var output = new OpenXmlWorkbookReader().Read(outputPath).GetSheet("Data");
+    Equal("3", output.GetCell("B6")!.Payload.RawValue);
+    Equal("Added", output.GetCell("C6")!.Payload.RawValue);
+    Equal(CellValueKind.Blank, output.GetCell("B1000")!.Payload.Kind);
+    True(output.GetCell("B1001") is null);
+}
+
+static void CleanupEmptyFormattingPreservesContent(string sourcePath, string testRoot)
+{
+    var cleanupSourcePath = Path.Combine(testRoot, "cleanup-empty-formatting-source.xlsx");
+    var outputPath = Path.Combine(testRoot, "cleanup-empty-formatting-output.xlsx");
+    File.Copy(sourcePath, cleanupSourcePath);
+    new OpenXmlWorkbookEditor().Apply(cleanupSourcePath, new WorkbookEdit[]
+    {
+        new SetCellEdit("Data", "Z4", CellPayload.Blank, "2"),
+        new SetCellEdit("Data", "B1000", CellPayload.Blank, "2")
+    });
+    AddColumnFormatting(cleanupSourcePath, "xl/worksheets/sheet1.xml", 1, 26);
+
+    new AtomicWorkbookSaver().Save(cleanupSourcePath, outputPath, new WorkbookEdit[]
+    {
+        new CleanupEmptyFormattingEdit("Data")
+    });
+
+    var output = new OpenXmlWorkbookReader().Read(outputPath).GetSheet("Data");
+    True(output.GetCell("Z4") is null);
+    True(output.GetCell("B1000") is null);
+    Equal("2", output.GetCell("C4")!.StyleIndex);
+    Equal("B5*2", output.GetCell("D5")!.Payload.FormulaText);
+    Equal("4", output.GetCell("D5")!.Payload.CachedValue);
+
+    var worksheet = ReadZipXml(outputPath, "xl/worksheets/sheet1.xml");
+    XNamespace spreadsheet = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    Equal("A1:E5", (string?)worksheet.Root?.Element(spreadsheet + "dimension")?.Attribute("ref"));
+    var column = worksheet.Root?.Element(spreadsheet + "cols")?.Elements(spreadsheet + "col").Single();
+    Equal("1", (string?)column?.Attribute("min"));
+    Equal("5", (string?)column?.Attribute("max"));
 }
 
 static void FailedSavePreservesOutput(string sourcePath, string testRoot)
@@ -422,6 +508,37 @@ static string HashZipPart(string path, string partName)
     using var archive = ZipFile.OpenRead(path);
     using var stream = archive.GetEntry(partName)!.Open();
     return Convert.ToHexString(SHA256.HashData(stream));
+}
+
+static XDocument ReadZipXml(string path, string partName)
+{
+    using var archive = ZipFile.OpenRead(path);
+    using var stream = archive.GetEntry(partName)!.Open();
+    return XDocument.Load(stream);
+}
+
+static void AddColumnFormatting(string path, string partName, int minimum, int maximum)
+{
+    using var archive = ZipFile.Open(path, ZipArchiveMode.Update);
+    var entry = archive.GetEntry(partName)!;
+    XDocument document;
+    using (var stream = entry.Open())
+        document = XDocument.Load(stream);
+    entry.Delete();
+
+    XNamespace spreadsheet = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    var columns = new XElement(
+        spreadsheet + "cols",
+        new XElement(
+            spreadsheet + "col",
+            new XAttribute("min", minimum),
+            new XAttribute("max", maximum),
+            new XAttribute("width", "20"),
+            new XAttribute("customWidth", "1")));
+    document.Root!.Element(spreadsheet + "sheetData")!.AddBeforeSelf(columns);
+    var replacement = archive.CreateEntry(partName, CompressionLevel.Optimal);
+    using var output = replacement.Open();
+    document.Save(output, SaveOptions.DisableFormatting);
 }
 
 internal static class TestWorkbookFactory

@@ -24,6 +24,7 @@ public sealed class OpenXmlWorkbookEditor
             var document = OpenXmlWorkbookReader.LoadXml(archive, partPath);
             var sheetData = document.Root?.Element(OpenXmlNamespaces.Spreadsheet + "sheetData")
                 ?? throw new InvalidDataException($"工作表 {editGroup.Key} 缺少 sheetData。");
+            var cleanedEmptyFormatting = false;
 
             foreach (var edit in editGroup)
             {
@@ -38,12 +39,22 @@ public sealed class OpenXmlWorkbookEditor
                     case AppendRowEdit appendRow:
                         AppendRow(sheetData, appendRow.Cells);
                         break;
+                    case ReplaceMetadataRowsEdit replaceMetadata:
+                        ReplaceMetadataRows(sheetData, replaceMetadata);
+                        break;
+                    case CleanupEmptyFormattingEdit:
+                        CleanupEmptyFormatting(document, sheetData);
+                        cleanedEmptyFormatting = true;
+                        break;
                     default:
                         throw new NotSupportedException($"不支持的工作簿编辑类型：{edit.GetType().Name}。");
                 }
             }
 
-            ExpandDimension(document, sheetData);
+            if (cleanedEmptyFormatting)
+                RecalculateDimension(document, sheetData);
+            else
+                ExpandDimension(document, sheetData);
             ReplaceXmlEntry(archive, partPath, document);
             touchedParts.Add(partPath);
         }
@@ -121,6 +132,7 @@ public sealed class OpenXmlWorkbookEditor
     private static void AppendRow(XElement sheetData, IReadOnlyList<CellWrite> cells)
     {
         var rowNumber = sheetData.Elements(OpenXmlNamespaces.Spreadsheet + "row")
+            .Where(row => row.Elements(OpenXmlNamespaces.Spreadsheet + "c").Any(HasCellContent))
             .Select(row => int.TryParse((string?)row.Attribute("r"), out var number) ? number : 0)
             .DefaultIfEmpty(0)
             .Max() + 1;
@@ -128,6 +140,70 @@ public sealed class OpenXmlWorkbookEditor
         foreach (var cell in cells.OrderBy(cell => cell.ColumnIndex))
             SetCell(sheetData, CellReference.Create(rowNumber, cell.ColumnIndex), cell.Payload, cell.StyleIndex);
     }
+
+    private static void ReplaceMetadataRows(XElement sheetData, ReplaceMetadataRowsEdit edit)
+    {
+        if (edit.StartRowNumber < 1 || edit.ExistingRowCount < 0)
+            throw new ArgumentOutOfRangeException(nameof(edit));
+
+        var oldEnd = edit.StartRowNumber + edit.ExistingRowCount;
+        var delta = edit.Rows.Count - edit.ExistingRowCount;
+        var rows = sheetData.Elements(OpenXmlNamespaces.Spreadsheet + "row")
+            .Select(row => (Row: row, Number: int.TryParse((string?)row.Attribute("r"), out var number) ? number : 0))
+            .Where(item => item.Number > 0)
+            .ToArray();
+
+        foreach (var item in rows.Where(item => item.Number >= edit.StartRowNumber && item.Number < oldEnd))
+            item.Row.Remove();
+
+        if (delta != 0)
+        {
+            ShiftFormulaReferences(sheetData, oldEnd, delta);
+            var moving = rows.Where(item => item.Number >= oldEnd)
+                .OrderBy(item => item.Number)
+                .ToArray();
+            if (delta > 0)
+                moving = moving.Reverse().ToArray();
+            foreach (var item in moving)
+            {
+                var newNumber = item.Number + delta;
+                item.Row.SetAttributeValue("r", newNumber);
+                foreach (var cell in item.Row.Elements(OpenXmlNamespaces.Spreadsheet + "c"))
+                {
+                    var address = (string?)cell.Attribute("r");
+                    if (address is null)
+                        continue;
+                    var reference = CellReference.Parse(address);
+                    cell.SetAttributeValue("r", CellReference.Create(newNumber, reference.ColumnIndex));
+                }
+            }
+        }
+
+        for (var index = 0; index < edit.Rows.Count; index++)
+        {
+            var rowNumber = edit.StartRowNumber + index;
+            var row = GetOrCreateRow(sheetData, rowNumber);
+            foreach (var cell in edit.Rows[index].Cells.OrderBy(cell => cell.ColumnIndex))
+                SetCell(sheetData, CellReference.Create(rowNumber, cell.ColumnIndex), cell.Payload, cell.StyleIndex);
+        }
+    }
+
+    private static void ShiftFormulaReferences(XElement sheetData, int firstMovedRow, int delta)
+    {
+        foreach (var formula in sheetData.Descendants(OpenXmlNamespaces.Spreadsheet + "f"))
+        {
+            if (!string.IsNullOrEmpty(formula.Value))
+                formula.Value = FormulaReferenceShifter.ShiftRows(formula.Value, firstMovedRow, delta);
+            var sharedRange = (string?)formula.Attribute("ref");
+            if (!string.IsNullOrEmpty(sharedRange))
+                formula.SetAttributeValue("ref", FormulaReferenceShifter.ShiftRows(sharedRange, firstMovedRow, delta));
+        }
+    }
+
+    private static bool HasCellContent(XElement cell) =>
+        cell.Element(OpenXmlNamespaces.Spreadsheet + "f") is not null ||
+        cell.Element(OpenXmlNamespaces.Spreadsheet + "v") is not null ||
+        cell.Element(OpenXmlNamespaces.Spreadsheet + "is") is not null;
 
     private static XElement GetOrCreateRow(XElement sheetData, int rowNumber)
     {
@@ -217,6 +293,129 @@ public sealed class OpenXmlWorkbookEditor
 
     private static bool NeedsPreservedWhitespace(string? value) =>
         !string.IsNullOrEmpty(value) && (char.IsWhiteSpace(value[0]) || char.IsWhiteSpace(value[^1]));
+
+    private static void CleanupEmptyFormatting(XDocument document, XElement sheetData)
+    {
+        var rows = sheetData.Elements(OpenXmlNamespaces.Spreadsheet + "row").ToArray();
+        var contentColumns = rows
+            .SelectMany(row => row.Elements(OpenXmlNamespaces.Spreadsheet + "c"))
+            .Where(HasCellContent)
+            .Select(cell => CellReference.Parse((string?)cell.Attribute("r")
+                ?? throw new InvalidDataException("工作表包含缺少地址的单元格。")))
+            .Select(reference => reference.ColumnIndex + 1)
+            .ToHashSet();
+
+        foreach (var row in rows)
+        {
+            var cells = row.Elements(OpenXmlNamespaces.Spreadsheet + "c").ToArray();
+            if (!cells.Any(HasCellContent))
+            {
+                row.Remove();
+                continue;
+            }
+
+            foreach (var cell in cells.Where(cell => !HasCellContent(cell)))
+            {
+                var reference = CellReference.Parse((string?)cell.Attribute("r")
+                    ?? throw new InvalidDataException("工作表包含缺少地址的单元格。"));
+                if (!contentColumns.Contains(reference.ColumnIndex + 1))
+                    cell.Remove();
+            }
+
+            if (row.Attribute("spans") is not null)
+            {
+                var remainingColumns = row.Elements(OpenXmlNamespaces.Spreadsheet + "c")
+                    .Select(cell => CellReference.Parse((string?)cell.Attribute("r")
+                        ?? throw new InvalidDataException("工作表包含缺少地址的单元格。")))
+                    .Select(reference => reference.ColumnIndex + 1)
+                    .ToArray();
+                row.SetAttributeValue("spans", $"{remainingColumns.Min()}:{remainingColumns.Max()}");
+            }
+        }
+
+        CleanupEmptyColumnDefinitions(document, contentColumns);
+    }
+
+    private static void CleanupEmptyColumnDefinitions(XDocument document, IReadOnlySet<int> contentColumns)
+    {
+        var columns = document.Root?.Element(OpenXmlNamespaces.Spreadsheet + "cols");
+        if (columns is null)
+            return;
+
+        foreach (var column in columns.Elements(OpenXmlNamespaces.Spreadsheet + "col").ToArray())
+        {
+            if (!int.TryParse((string?)column.Attribute("min"), out var minimum) ||
+                !int.TryParse((string?)column.Attribute("max"), out var maximum) ||
+                minimum < 1 || maximum < minimum)
+            {
+                continue;
+            }
+
+            var retained = contentColumns
+                .Where(index => index >= minimum && index <= maximum)
+                .Order()
+                .ToArray();
+            if (retained.Length == 0)
+            {
+                column.Remove();
+                continue;
+            }
+
+            var replacements = new List<XElement>();
+            var start = retained[0];
+            var end = start;
+            foreach (var index in retained.Skip(1))
+            {
+                if (index == end + 1)
+                {
+                    end = index;
+                    continue;
+                }
+
+                replacements.Add(CloneColumnRange(column, start, end));
+                start = end = index;
+            }
+            replacements.Add(CloneColumnRange(column, start, end));
+            column.ReplaceWith(replacements);
+        }
+
+        if (!columns.Elements(OpenXmlNamespaces.Spreadsheet + "col").Any())
+            columns.Remove();
+    }
+
+    private static XElement CloneColumnRange(XElement source, int minimum, int maximum)
+    {
+        var clone = new XElement(source);
+        clone.SetAttributeValue("min", minimum);
+        clone.SetAttributeValue("max", maximum);
+        return clone;
+    }
+
+    private static void RecalculateDimension(XDocument document, XElement sheetData)
+    {
+        var dimension = document.Root?.Element(OpenXmlNamespaces.Spreadsheet + "dimension");
+        var cells = sheetData.Descendants(OpenXmlNamespaces.Spreadsheet + "c")
+            .Select(cell => (string?)cell.Attribute("r"))
+            .Where(address => address is not null)
+            .Select(address => CellReference.Parse(address!))
+            .ToArray();
+        if (cells.Length == 0)
+        {
+            dimension?.SetAttributeValue("ref", "A1");
+            return;
+        }
+
+        dimension ??= new XElement(OpenXmlNamespaces.Spreadsheet + "dimension");
+        if (dimension.Parent is null)
+            document.Root?.AddFirst(dimension);
+        var firstAddress = CellReference.Create(
+            cells.Min(cell => cell.RowNumber),
+            cells.Min(cell => cell.ColumnIndex));
+        var lastAddress = CellReference.Create(
+            cells.Max(cell => cell.RowNumber),
+            cells.Max(cell => cell.ColumnIndex));
+        dimension.SetAttributeValue("ref", firstAddress == lastAddress ? firstAddress : $"{firstAddress}:{lastAddress}");
+    }
 
     private static void ExpandDimension(XDocument document, XElement sheetData)
     {

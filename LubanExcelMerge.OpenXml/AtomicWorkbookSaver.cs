@@ -152,6 +152,8 @@ public sealed class AtomicWorkbookSaver
                 .Where(edit => edit.SheetName == sourceSheet.Name)
                 .Select(edit => edit.RowNumber)
                 .ToHashSet();
+            var metadataReplacement = edits.OfType<ReplaceMetadataRowsEdit>()
+                .FirstOrDefault(edit => edit.SheetName == sourceSheet.Name);
 
             foreach (var sourceFormula in sourceSheet.Rows.SelectMany(row => row.Cells)
                          .Where(cell => cell.Payload.Kind == Core.CellValueKind.Formula))
@@ -159,9 +161,26 @@ public sealed class AtomicWorkbookSaver
                 if (setCells.Contains(sourceFormula.Address) || deletedRows.Contains(sourceFormula.RowNumber))
                     continue;
 
-                var candidateFormula = candidateSheet.GetCell(sourceFormula.Address);
+                var candidateAddress = sourceFormula.Address;
+                if (metadataReplacement is not null)
+                {
+                    var firstMovedRow = metadataReplacement.StartRowNumber + metadataReplacement.ExistingRowCount;
+                    if (sourceFormula.RowNumber >= firstMovedRow)
+                    {
+                        candidateAddress = CellReference.Create(
+                            sourceFormula.RowNumber + metadataReplacement.Rows.Count - metadataReplacement.ExistingRowCount,
+                            sourceFormula.ColumnIndex);
+                    }
+                }
+                var candidateFormula = candidateSheet.GetCell(candidateAddress);
+                var expectedFormula = metadataReplacement is null
+                    ? sourceFormula.Payload.FormulaText
+                    : FormulaReferenceShifter.ShiftRows(
+                        sourceFormula.Payload.FormulaText ?? string.Empty,
+                        metadataReplacement.StartRowNumber + metadataReplacement.ExistingRowCount,
+                        metadataReplacement.Rows.Count - metadataReplacement.ExistingRowCount);
                 if (candidateFormula?.Payload.Kind != Core.CellValueKind.Formula ||
-                    candidateFormula.Payload.FormulaText != sourceFormula.Payload.FormulaText ||
+                    candidateFormula.Payload.FormulaText != expectedFormula ||
                     preserveFormulaCaches && candidateFormula.Payload.CachedValue != sourceFormula.Payload.CachedValue)
                     throw new InvalidDataException($"保存验证失败：未修改公式 {sourceSheet.Name}!{sourceFormula.Address} 或其缓存发生变化。");
             }

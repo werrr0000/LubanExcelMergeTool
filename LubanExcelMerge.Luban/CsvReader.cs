@@ -39,7 +39,14 @@ public static class CsvReader
 
             if (character == '"')
             {
-                if (field.Length != 0 || closedQuote)
+                if (field.Length != 0 && !closedQuote)
+                {
+                    // Luban accepts bare quotes in unquoted metadata fields.
+                    field.Append(character);
+                    continue;
+                }
+
+                if (closedQuote)
                     throw new FormatException("CSV 引号只能出现在字段开头。");
 
                 inQuotes = true;

@@ -78,6 +78,7 @@ public sealed class ResolvableMergeConflict
 public sealed class PreparedSheetMerge
 {
     private IReadOnlyList<MergeGridLocation>? _automaticEditLocations;
+    private IReadOnlyList<MergeGridLocation>? _automaticMergeLocations;
     private readonly Func<IReadOnlyList<WorkbookEdit>>? _finalEditFactory;
 
     internal PreparedSheetMerge(
@@ -117,6 +118,12 @@ public sealed class PreparedSheetMerge
     public IReadOnlyList<string> StructuralChanges { get; }
     public bool RequiresStructuralChangeConfirmation => StructuralChanges.Count > 0;
     public int AutomaticEditCount => AutomaticEdits.Count;
+    public int AutomaticMergeCount => AutomaticMergeLocations.Count;
+    public IReadOnlyList<MergeGridLocation> AutomaticMergeLocations =>
+        _automaticMergeLocations ??= Comparison.FindAutomaticMergeLocations();
+    public int ProcessedMergeCount => ProcessedMergeLocations.Count;
+    public IReadOnlyList<MergeGridLocation> ProcessedMergeLocations =>
+        Comparison.FindProcessedMergeLocations();
     public IReadOnlyList<MergeGridLocation> AutomaticEditLocations
     {
         get
@@ -220,6 +227,8 @@ public sealed class PreparedMergeSession
     public int AddedRecords => Sheets.Sum(sheet => sheet.AddedRecords);
     public int DeletedRecords => Sheets.Sum(sheet => sheet.DeletedRecords);
     public int AutomaticEditCount => Sheets.Sum(sheet => sheet.AutomaticEditCount);
+    public int AutomaticMergeCount => Sheets.Sum(sheet => sheet.AutomaticMergeCount);
+    public int ProcessedMergeCount => Sheets.Sum(sheet => sheet.ProcessedMergeCount);
     public int MetadataChangeCount => Sheets.Sum(sheet => sheet.MetadataChangeCount);
     public IReadOnlyList<string> StructuralChanges => Sheets
         .SelectMany(sheet => sheet.StructuralChanges.Select(change => $"{sheet.SheetName}：{change}"))
@@ -234,9 +243,14 @@ public sealed class PreparedMergeSession
         if (!CanSave)
             throw new InvalidOperationException($"仍有 {RemainingConflicts} 个冲突未解决，不能保存。");
 
-        var edits = Sheets.SelectMany(sheet => sheet.GetSelectedEdits()).ToArray();
-        var formulaMayBeAffected = edits.Length > 0 &&
-            (_localFormulaCount > 0 || edits.Any(ContainsFormula));
+        var mergeEdits = Sheets.SelectMany(sheet => sheet.GetSelectedEdits()).ToArray();
+        var formulaMayBeAffected = mergeEdits.Length > 0 &&
+            (_localFormulaCount > 0 || mergeEdits.Any(ContainsFormula));
+        var cleanupEdits = Sheets.Select(sheet => (WorkbookEdit)new CleanupEmptyFormattingEdit(sheet.SheetName));
+        var edits = cleanupEdits
+            .Concat(mergeEdits)
+            .Concat(cleanupEdits)
+            .ToArray();
         try
         {
             using var outputLease = MergeOutputLease.Acquire(OutputPath);

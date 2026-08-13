@@ -19,7 +19,8 @@ public sealed class SheetTabViewModel : INotifyPropertyChanged
     public int ConflictCount => Model.Conflicts.Count;
     public int RemainingCount => Model.RemainingConflicts;
     public int ResolvedCount => ConflictCount - RemainingCount;
-    public int AutomaticEditCount => Model.AutomaticEditCount;
+    public int AutomaticMergeCount => Model.AutomaticMergeCount;
+    public int ProcessedMergeCount => Model.ProcessedMergeCount;
     public int MetadataChangeCount => Model.MetadataChangeCount;
     public bool HasUnresolvedConflicts => RemainingCount > 0;
     public bool HasUnresolvedMetadataChanges => Conflicts.Any(conflict =>

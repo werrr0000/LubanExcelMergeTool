@@ -3,6 +3,7 @@ using LubanExcelMerge.Luban;
 var tests = new List<(string Name, Action Run)>
 {
     ("CSV quoted commas, escaped quotes and newlines", CsvQuotedFields),
+    ("CSV bare quotes in Luban metadata are preserved", CsvBareQuotesInMetadata),
     ("logical table metadata rows are ignored", CatalogIgnoresMetadata),
     ("catalog matches normalized input path", CatalogMatchesPath),
     ("compound index declaration", CompoundIndex),
@@ -70,6 +71,19 @@ static void CsvQuotedFields()
     Equal("b,c", rows[0][1]);
     Equal("line1\nline2", rows[0][2]);
     Equal("say \"hi\"", rows[0][3]);
+}
+
+static void CsvBareQuotesInMetadata()
+{
+    const string csv = "##var,full_name,value_type,read_schema_from_file,input,index,mode,group\n" +
+                       "##,TbLubanTest,LubanTest,TRUE,LubanTest.xlsx,Id\",key2,key3\n" +
+                       ",TbAccountLv,AccountLv,TRUE,AccountLv.xlsx,,,c\n";
+    var rows = CsvReader.ReadAll(new StringReader(csv));
+    Equal("Id\"", rows[1][5]);
+
+    var catalog = LogicalTableCatalog.Parse(new StringReader(csv));
+    Equal(1, catalog.Tables.Count);
+    Equal("TbAccountLv", catalog.Tables[0].FullName);
 }
 
 static void CatalogIgnoresMetadata()

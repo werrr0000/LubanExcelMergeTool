@@ -30,6 +30,7 @@ public sealed record MergeRunResult(
 
 public sealed class LubanMergeCoordinator
 {
+    private const string SingletonRecordKey = "__single_record__";
     private readonly GitLfsInputResolver _lfsResolver;
     private readonly OpenXmlWorkbookReader _workbookReader;
     private readonly AtomicWorkbookSaver _saver;
@@ -247,31 +248,47 @@ public sealed class LubanMergeCoordinator
                 CreateRecordSources(sheets.Local, schemaMerge, SchemaSide.Local, localPath, dataRows[1]),
                 CreateRecordSources(sheets.Remote, schemaMerge, SchemaSide.Remote, remotePath, dataRows[2])
             };
-            var keyCandidates = (configuredKey is null
-                    ? logicalTable.DeclaredIndexes
-                    : new[] { new RecordKeyDefinition(configuredKey) })
-                .Select(candidate => new RecordKeyDefinition(candidate.FieldNames
-                    .Select(fieldName => MapFieldName(schemaMerge, fieldName))))
-                .ToArray();
-            var keySelection = PrimaryKeySelector.Select(
-                schemaMerge.TargetSchema,
-                keyCandidates,
-                recordSources[0],
-                recordSources[1],
-                recordSources[2]);
-            if (keySelection.Selected is null)
+            var isSingleton = string.Equals(logicalTable.Mode, "one", StringComparison.OrdinalIgnoreCase);
+            RecordKeyDefinition keyDefinition;
+            if (isSingleton)
             {
-                var message = FormatKeyFailures(keySelection.Attempts);
                 if (configuredKey is not null)
                 {
                     throw new MergeInputException(
                         $"配置文件 {options.LoadedConfigPath ?? "<运行参数>"} 的 " +
-                        $"$.keyOverrides['{logicalTable.FullName}'] 无效：{message}");
+                        $"$.keyOverrides['{logicalTable.FullName}'] 不适用于 mode=one 单例逻辑表。");
                 }
-                throw new UnsafeWorkbookException(message);
+                ValidateSingletonRows(sheets.Local.Name, dataRows);
+                keyDefinition = new RecordKeyDefinition(new[] { SingletonRecordKey });
             }
+            else
+            {
+                var keyCandidates = (configuredKey is null
+                        ? logicalTable.DeclaredIndexes
+                        : new[] { new RecordKeyDefinition(configuredKey) })
+                    .Select(candidate => new RecordKeyDefinition(candidate.FieldNames
+                        .Select(fieldName => MapFieldName(schemaMerge, fieldName))))
+                    .ToArray();
+                var keySelection = PrimaryKeySelector.Select(
+                    schemaMerge.TargetSchema,
+                    keyCandidates,
+                    recordSources[0],
+                    recordSources[1],
+                    recordSources[2]);
+                if (keySelection.Selected is null)
+                {
+                    var message = FormatKeyFailures(keySelection.Attempts);
+                    if (configuredKey is not null)
+                    {
+                        throw new MergeInputException(
+                            $"配置文件 {options.LoadedConfigPath ?? "<运行参数>"} 的 " +
+                            $"$.keyOverrides['{logicalTable.FullName}'] 无效：{message}");
+                    }
+                    throw new UnsafeWorkbookException(message);
+                }
 
-            var keyDefinition = keySelection.Selected;
+                keyDefinition = keySelection.Selected;
+            }
             var alignedIgnoredFields = ignoredFields
                 .Select(fieldName => MapFieldName(schemaMerge, fieldName))
                 .ToArray();
@@ -280,7 +297,7 @@ public sealed class LubanMergeCoordinator
                 keyDefinition,
                 alignedIgnoredFields,
                 options.LoadedConfigPath);
-            if (options.ValidateLogicalTableUniqueness)
+            if (options.ValidateLogicalTableUniqueness && !isSingleton)
             {
                 ValidateLogicalTableUniqueness(
                     metadata,
@@ -581,8 +598,24 @@ public sealed class LubanMergeCoordinator
 
     private static void ValidateMode(LogicalTableDefinition table)
     {
-        if (!string.IsNullOrEmpty(table.Mode) && !string.Equals(table.Mode, "map", StringComparison.OrdinalIgnoreCase))
+        if (!string.IsNullOrEmpty(table.Mode) &&
+            !string.Equals(table.Mode, "map", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(table.Mode, "one", StringComparison.OrdinalIgnoreCase))
             throw new UnsafeWorkbookException($"逻辑表 {table.FullName} 的模式 {table.Mode} 尚不能安全地在无界面模式下合并。");
+    }
+
+    private static void ValidateSingletonRows(
+        string sheetName,
+        IReadOnlyList<IReadOnlyList<OpenXmlRowSnapshot>> dataRows)
+    {
+        foreach (var (side, rows) in dataRows.Select((rows, index) => (new[] { "BASE", "LOCAL", "REMOTE" }[index], rows)))
+        {
+            if (rows.Count != 1)
+            {
+                throw new UnsafeWorkbookException(
+                    $"工作表 {sheetName} 的 mode=one 表在 {side} 中必须恰好有 1 条数据记录，实际为 {rows.Count} 条。");
+            }
+        }
     }
 
     private static IReadOnlyList<(SheetSnapshot Base, SheetSnapshot Local, SheetSnapshot Remote)> SelectSheets(
@@ -611,7 +644,10 @@ public sealed class LubanMergeCoordinator
     {
         try
         {
-            return (ParseSchema(@base), ParseSchema(local), ParseSchema(remote));
+            return (
+                NormalizeSchema(ParseSchema(@base)),
+                NormalizeSchema(ParseSchema(local)),
+                NormalizeSchema(ParseSchema(remote)));
         }
         catch (FormatException exception)
         {
@@ -632,6 +668,67 @@ public sealed class LubanMergeCoordinator
         return LubanSchemaParser.Parse(rows);
     }
 
+    private static LubanSchema NormalizeSchema(LubanSchema schema)
+    {
+        // A commented first data row also starts with ##. It belongs to the
+        // data area, not to Luban metadata, and must not shift DataStartRowNumber.
+        var metadataRows = schema.MetadataRows
+            .Where(row => !IsCommentedDataRow(schema, row))
+            .ToArray();
+        var dataStart = metadataRows.Length == 0
+            ? schema.DataStartRowNumber
+            : metadataRows.Max(row => row.RowNumber) + 1;
+        return schema with
+        {
+            MetadataRows = metadataRows,
+            DataStartRowNumber = dataStart
+        };
+    }
+
+    private static bool IsCommentedDataRow(LubanSchema schema, LubanRawRow row)
+    {
+        var marker = row.Cells.FirstOrDefault(cell => !string.IsNullOrEmpty(cell));
+        if (!string.Equals(marker, "##", StringComparison.Ordinal) ||
+            row.RowNumber <= schema.PrimaryVariableRowNumber)
+        {
+            return false;
+        }
+
+        // Numeric and boolean fields provide an unambiguous signal that a ## row
+        // is a commented record rather than a descriptive metadata row.
+        foreach (var field in schema.Fields)
+        {
+            if (field.TypeName.Length == 0 ||
+                field.TypeName.StartsWith("string", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var value = field.ColumnIndex < row.Cells.Count ? row.Cells[field.ColumnIndex] : null;
+            if (string.IsNullOrWhiteSpace(value))
+                continue;
+            if (field.TypeName.StartsWith("bool", StringComparison.OrdinalIgnoreCase) &&
+                (value is "0" or "1" or "true" or "false"))
+            {
+                return true;
+            }
+            if (field.TypeName.StartsWith("int", StringComparison.OrdinalIgnoreCase) ||
+                field.TypeName.StartsWith("long", StringComparison.OrdinalIgnoreCase) ||
+                field.TypeName.StartsWith("float", StringComparison.OrdinalIgnoreCase) ||
+                field.TypeName.StartsWith("double", StringComparison.OrdinalIgnoreCase) ||
+                field.TypeName.StartsWith("decimal", StringComparison.OrdinalIgnoreCase))
+            {
+                if (decimal.TryParse(value, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out _))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private static SchemaMergePlan CreateSchemaMergePlan(
         (LubanSchema Base, LubanSchema Local, LubanSchema Remote) schemas,
         (SheetSnapshot Base, SheetSnapshot Local, SheetSnapshot Remote) sheets)
@@ -645,21 +742,10 @@ public sealed class LubanMergeCoordinator
             throw new UnsafeWorkbookException("工作表结构处于受限模式：" + string.Join("；", restrictions));
         }
 
-        if (schemas.Base.PrimaryVariableRowNumber != schemas.Local.PrimaryVariableRowNumber ||
-            schemas.Base.PrimaryVariableRowNumber != schemas.Remote.PrimaryVariableRowNumber ||
-            schemas.Base.TypeRowNumber != schemas.Local.TypeRowNumber ||
-            schemas.Base.TypeRowNumber != schemas.Remote.TypeRowNumber ||
-            schemas.Base.DataStartRowNumber != schemas.Local.DataStartRowNumber ||
-            schemas.Base.DataStartRowNumber != schemas.Remote.DataStartRowNumber)
-        {
-            throw new UnsafeWorkbookException(
-                "BASE、LOCAL、REMOTE 的 Luban 表头行或数据起始行不一致；" +
-                "当前版本支持追加字段列，但仍不支持插入或删除元数据行。");
-        }
-
         var drafts = AlignFields(schemas);
         var occupiedLocalColumns = sheets.Local.Rows
             .SelectMany(row => row.Cells)
+            .Where(HasCellContent)
             .Select(cell => cell.ColumnIndex)
             .ToHashSet();
         var usedTargetColumns = schemas.Local.Fields.Select(field => field.ColumnIndex).ToHashSet();
@@ -750,6 +836,7 @@ public sealed class LubanMergeCoordinator
         var maximumTargetColumn = alignments.Select(alignment => alignment.Target.ColumnIndex).DefaultIfEmpty(-1).Max();
         var maximumRawColumn = sheets.Local.Rows
             .SelectMany(row => row.Cells)
+            .Where(HasCellContent)
             .Select(cell => cell.ColumnIndex)
             .DefaultIfEmpty(-1)
             .Max();
@@ -893,9 +980,34 @@ public sealed class LubanMergeCoordinator
     {
         var edits = new List<WorkbookEdit>();
         var conflicts = new List<ResolvableMergeConflict>();
+        var metadataRows = new[] { schemas.Base.MetadataRows, schemas.Local.MetadataRows, schemas.Remote.MetadataRows };
+        if (metadataRows.Any(rows => rows.Count != schemas.Local.MetadataRows.Count) ||
+            !MetadataShapeEquals(schemas.Base, schemas.Local) ||
+            !MetadataShapeEquals(schemas.Remote, schemas.Local))
+        {
+            var baseValue = FormatMetadataRows(sheets.Base, schemas.Base, schemaMerge, SchemaSide.Base);
+            var localValue = FormatMetadataRows(sheets.Local, schemas.Local, schemaMerge, SchemaSide.Local);
+            var remoteValue = FormatMetadataRows(sheets.Remote, schemas.Remote, schemaMerge, SchemaSide.Remote);
+            var conflict = new MergeConflict(
+                MergeConflictKind.MetadataChanged,
+                "Luban 元数据行",
+                CellReference.Create(1, 0),
+                "BASE、LOCAL、REMOTE 的 Luban 元数据行数量或数据起始行不同，请选择要保留的元数据区。");
+            conflicts.Add(CreateResolution(
+                conflicts.Count,
+                conflict,
+                1,
+                baseValue,
+                localValue,
+                remoteValue,
+                new[] { CreateMetadataReplacement(sheets.Local.Name, schemas.Local, schemaMerge, sheets.Base, schemas.Base, SchemaSide.Base) },
+                Array.Empty<WorkbookEdit>(),
+                new[] { CreateMetadataReplacement(sheets.Local.Name, schemas.Local, schemaMerge, sheets.Remote, schemas.Remote, SchemaSide.Remote) }));
+            return new MetadataMergePlan(edits, conflicts);
+        }
         var alignmentByColumn = schemaMerge.Fields.ToDictionary(
             alignment => alignment.Target.ColumnIndex);
-        for (var rowNumber = 1; rowNumber < schemaMerge.TargetSchema.DataStartRowNumber; rowNumber++)
+        for (var rowNumber = 1; rowNumber <= schemas.Local.MetadataRows.Count; rowNumber++)
         {
             var baseCells = CreateAlignedCellArray(
                 FindRow(sheets.Base, rowNumber), schemas.Base, schemaMerge, SchemaSide.Base);
@@ -966,6 +1078,47 @@ public sealed class LubanMergeCoordinator
         return new MetadataMergePlan(edits, conflicts);
     }
 
+    private static string FormatMetadataRows(
+        SheetSnapshot sheet,
+        LubanSchema schema,
+        SchemaMergePlan schemaMerge,
+        SchemaSide side) =>
+        string.Join(" / ", schema.MetadataRows.Select(row =>
+            string.Join("|", CreateAlignedCellArray(sheet.GetRow(row.RowNumber), schema, schemaMerge, side)
+                .Select(FormatCell))));
+
+    private static bool MetadataShapeEquals(LubanSchema left, LubanSchema right)
+    {
+        var leftMarkers = left.MetadataRows.Select(row => row.Cells.FirstOrDefault(cell => !string.IsNullOrEmpty(cell)) ?? string.Empty);
+        var rightMarkers = right.MetadataRows.Select(row => row.Cells.FirstOrDefault(cell => !string.IsNullOrEmpty(cell)) ?? string.Empty);
+        return leftMarkers.SequenceEqual(rightMarkers, StringComparer.Ordinal);
+    }
+
+    private static WorkbookEdit CreateMetadataReplacement(
+        string sheetName,
+        LubanSchema localSchema,
+        SchemaMergePlan schemaMerge,
+        SheetSnapshot sourceSheet,
+        LubanSchema sourceSchema,
+        SchemaSide sourceSide) =>
+        new ReplaceMetadataRowsEdit(
+            sheetName,
+            1,
+            localSchema.MetadataRows.Count,
+            sourceSchema.MetadataRows
+                .OrderBy(metadata => metadata.RowNumber)
+                .Select(metadata => sourceSheet.GetRow(metadata.RowNumber))
+                .Where(row => row is not null)
+                .Select(row => new RowWrite(
+                    CreateAlignedCellArray(row, sourceSchema, schemaMerge, sourceSide)
+                        .Select((payload, column) => new CellWrite(
+                            column,
+                            payload,
+                            row!.GetCell(column)?.StyleIndex))
+                        .Where(cell => cell.Payload.Kind != CellValueKind.Blank)
+                        .ToArray()))
+                .ToArray());
+
     private static IReadOnlyList<LubanRecordSource> CreateRecordSources(
         SheetSnapshot sheet,
         LubanSchema schema,
@@ -1018,11 +1171,13 @@ public sealed class LubanMergeCoordinator
                     ? GetCell(row, sourceField.ColumnIndex)
                     : null,
                 StringComparer.Ordinal);
-            var components = keyDefinition.FieldNames.Select(fieldName =>
-                LubanKeyValueNormalizer.Normalize(
-                    targetSchema.FindField(fieldName)!,
-                    cells[fieldName]?.Payload.RawValue) ?? string.Empty).ToArray();
-            var recordKey = new LubanRecordKey(components);
+            var recordKey = keyDefinition.FieldNames.Count == 1 &&
+                            string.Equals(keyDefinition.FieldNames[0], SingletonRecordKey, StringComparison.Ordinal)
+                ? new LubanRecordKey(new[] { SingletonRecordKey })
+                : new LubanRecordKey(keyDefinition.FieldNames.Select(fieldName =>
+                    LubanKeyValueNormalizer.Normalize(
+                        targetSchema.FindField(fieldName)!,
+                        cells[fieldName]?.Payload.RawValue) ?? string.Empty).ToArray());
             var key = recordKey.StableValue;
             var record = new LubanRecord(
                 key,
@@ -1035,7 +1190,7 @@ public sealed class LubanMergeCoordinator
                 row.RowNumber,
                 record,
                 cells,
-                recordKey.DisplayValue,
+                IsSingletonKey(keyDefinition) ? "单例记录" : recordKey.DisplayValue,
                 CreateAlignedCellArray(row, schemaMerge.GetSchema(side), schemaMerge, side)));
         }
 
@@ -1141,7 +1296,38 @@ public sealed class LubanMergeCoordinator
                 schemaMerge,
                 analysisByColumn,
                 finalByIdentity));
-        return structuralEdits.Concat(remappedEdits).ToArray();
+        var allEdits = remappedEdits
+            .OfType<ReplaceMetadataRowsEdit>()
+            .Cast<WorkbookEdit>()
+            .Concat(structuralEdits)
+            .Concat(remappedEdits.Where(edit => edit is not ReplaceMetadataRowsEdit))
+            .ToArray();
+        var metadataReplacement = allEdits.OfType<ReplaceMetadataRowsEdit>().FirstOrDefault();
+        if (metadataReplacement is null)
+            return allEdits;
+
+        var delta = metadataReplacement.Rows.Count - metadataReplacement.ExistingRowCount;
+        return allEdits
+            .Select(edit => edit is ReplaceMetadataRowsEdit
+                ? edit
+                : ShiftEditRows(edit, metadataReplacement.StartRowNumber + metadataReplacement.ExistingRowCount, delta))
+            .ToArray();
+    }
+
+    private static WorkbookEdit ShiftEditRows(WorkbookEdit edit, int firstMovedRow, int delta) => edit switch
+    {
+        SetCellEdit setCell when delta != 0 => ShiftSetCell(setCell, firstMovedRow, delta),
+        DeleteRowEdit deleteRow when deleteRow.RowNumber >= firstMovedRow => deleteRow with { RowNumber = deleteRow.RowNumber + delta },
+        AppendRowEdit appendRow when appendRow.SourceRowNumber is int source && source >= firstMovedRow => appendRow with { SourceRowNumber = source + delta },
+        _ => edit
+    };
+
+    private static SetCellEdit ShiftSetCell(SetCellEdit edit, int firstMovedRow, int delta)
+    {
+        var (rowNumber, columnIndex) = CellReference.Parse(edit.Address);
+        return rowNumber >= firstMovedRow
+            ? edit with { Address = CellReference.Create(rowNumber + delta, columnIndex) }
+            : edit;
     }
 
     private static IReadOnlyList<ResolvedField> ResolveFinalFields(
@@ -1172,6 +1358,7 @@ public sealed class LubanMergeCoordinator
             .ToHashSet();
         var blockedColumns = localSheet.Rows
             .SelectMany(row => row.Cells)
+            .Where(HasCellContent)
             .Select(cell => cell.ColumnIndex)
             .Where(column => !localFieldColumns.Contains(column))
             .ToHashSet();
@@ -1353,6 +1540,13 @@ public sealed class LubanMergeCoordinator
     private static OpenXmlCellSnapshot? GetCell(OpenXmlRowSnapshot row, int columnIndex) =>
         row.GetCell(columnIndex);
 
+    private static bool HasCellContent(OpenXmlCellSnapshot cell) =>
+        cell.Payload.Kind != CellValueKind.Blank;
+
+    private static bool IsSingletonKey(RecordKeyDefinition keyDefinition) =>
+        keyDefinition.FieldNames.Count == 1 &&
+        string.Equals(keyDefinition.FieldNames[0], SingletonRecordKey, StringComparison.Ordinal);
+
     private static MergeComparison CreateComparison(
         (SheetSnapshot Base, SheetSnapshot Local, SheetSnapshot Remote) sheets,
         (LubanSchema Base, LubanSchema Local, LubanSchema Remote) schemas,
@@ -1367,9 +1561,13 @@ public sealed class LubanMergeCoordinator
         var columnCount = schemaMerge.ColumnCount;
         var columnHeaders = Enumerable.Range(0, columnCount).Select(MergeComparison.ColumnName).ToArray();
         var rows = new List<ComparisonRowPlan>();
+        var metadataRegionConflict = conflicts.FirstOrDefault(conflict =>
+            conflict.Conflict.Kind == MergeConflictKind.MetadataChanged &&
+            string.Equals(conflict.Conflict.RecordKey, "Luban 元数据行", StringComparison.Ordinal));
         var metadataConflictsByRow = conflicts
             .Where(conflict => (conflict.Conflict.Kind == MergeConflictKind.MetadataChanged ||
                                 schemaMerge.Conflicts.Contains(conflict)) &&
+                               !ReferenceEquals(conflict, metadataRegionConflict) &&
                                conflict.RowNumber is not null)
             .GroupBy(conflict => conflict.RowNumber!.Value)
             .ToDictionary(group => group.Key, group => (IReadOnlyList<ResolvableMergeConflict>)group.ToArray());
@@ -1382,10 +1580,36 @@ public sealed class LubanMergeCoordinator
                 group => (IReadOnlyList<ResolvableMergeConflict>)group.ToArray(),
                 StringComparer.Ordinal);
 
-        for (var rowNumber = 1; rowNumber < schema.DataStartRowNumber; rowNumber++)
+        var metadataRowCount = new[]
+        {
+            schemas.Base.MetadataRows.Count,
+            schemas.Local.MetadataRows.Count,
+            schemas.Remote.MetadataRows.Count
+        }.Max();
+        for (var rowNumber = 1; rowNumber <= metadataRowCount; rowNumber++)
         {
             var metadataCellConflicts = new Dictionary<int, string>();
             var rowIndex = rows.Count;
+            var baseCells = CreateAlignedCellArray(
+                FindMetadataRow(sheets.Base, schemas.Base, rowNumber), schemas.Base, schemaMerge, SchemaSide.Base);
+            var localCells = CreateAlignedCellArray(
+                FindMetadataRow(sheets.Local, schemas.Local, rowNumber), schemas.Local, schemaMerge, SchemaSide.Local);
+            var remoteCells = CreateAlignedCellArray(
+                FindMetadataRow(sheets.Remote, schemas.Remote, rowNumber), schemas.Remote, schemaMerge, SchemaSide.Remote);
+            if (metadataRegionConflict is not null)
+            {
+                for (var columnIndex = 0; columnIndex < columnCount; columnIndex++)
+                {
+                    if (baseCells[columnIndex].ContentEquals(localCells[columnIndex]) &&
+                        baseCells[columnIndex].ContentEquals(remoteCells[columnIndex]))
+                    {
+                        continue;
+                    }
+                    metadataCellConflicts[columnIndex] = metadataRegionConflict.Id;
+                    if (metadataRegionConflict.GridRowIndex < 0)
+                        metadataRegionConflict.SetGridLocation(rowIndex, columnIndex);
+                }
+            }
             foreach (var conflict in metadataConflictsByRow.GetValueOrDefault(rowNumber) ??
                                      Array.Empty<ResolvableMergeConflict>())
             {
@@ -1400,9 +1624,9 @@ public sealed class LubanMergeCoordinator
                 rowNumber,
                 rowNumber,
                 rowNumber,
-                CreateAlignedCellArray(FindRow(sheets.Base, rowNumber), schemas.Base, schemaMerge, SchemaSide.Base),
-                CreateAlignedCellArray(FindRow(sheets.Local, rowNumber), schemas.Local, schemaMerge, SchemaSide.Local),
-                CreateAlignedCellArray(FindRow(sheets.Remote, rowNumber), schemas.Remote, schemaMerge, SchemaSide.Remote),
+                baseCells,
+                localCells,
+                remoteCells,
                 null,
                 metadataCellConflicts));
         }
@@ -1516,6 +1740,14 @@ public sealed class LubanMergeCoordinator
     }
 
     private static OpenXmlRowSnapshot? FindRow(SheetSnapshot sheet, int rowNumber) => sheet.GetRow(rowNumber);
+
+    private static OpenXmlRowSnapshot? FindMetadataRow(
+        SheetSnapshot sheet,
+        LubanSchema schema,
+        int rowNumber) =>
+        schema.MetadataRows.Any(row => row.RowNumber == rowNumber)
+            ? sheet.GetRow(rowNumber)
+            : null;
 
     private static MergeEditPlan CreateEdits(
         ParsedDataset @base,

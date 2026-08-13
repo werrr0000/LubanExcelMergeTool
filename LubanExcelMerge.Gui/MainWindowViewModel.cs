@@ -42,7 +42,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private bool _isBusy;
     private bool _isSaving;
     private bool _settingSelectionFromGrid;
-    private int _automaticEditNavigationIndex = -1;
+    private int _processedMergeNavigationIndex = -1;
 
     public MainWindowViewModel(Func<IReadOnlyList<string>, bool>? confirmStructuralChanges = null)
     {
@@ -63,7 +63,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         NextCommand = new RelayCommand(_ => MoveSelection(1), _ => _session?.Conflicts.Count > 0);
         NavigateAutomaticEditCommand = new RelayCommand(
             _ => NavigateToNextAutomaticEdit(),
-            _ => !IsBusy && _session?.AutomaticEditCount > 0);
+            _ => !IsBusy && _session?.ProcessedMergeCount > 0);
         UndoCommand = new RelayCommand(_ => Undo(), _ => _undo.Count > 0 && !IsBusy);
         RedoCommand = new RelayCommand(_ => Redo(), _ => _redo.Count > 0 && !IsBusy);
         ExportDiagnosticsCommand = new RelayCommand(_ => ExportDiagnostics(), _ => _diagnosticLogger is not null && !IsBusy);
@@ -175,7 +175,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     public int ConflictCount => _session?.Conflicts.Count ?? 0;
     public int RemainingCount => _session?.RemainingConflicts ?? 0;
     public int ResolvedCount => ConflictCount - RemainingCount;
-    public int AutomaticEditCount => _session?.AutomaticEditCount ?? 0;
+    public int AutomaticMergeCount => _session?.AutomaticMergeCount ?? 0;
+    public int ProcessedMergeCount => _session?.ProcessedMergeCount ?? 0;
+    public string ProcessedMergeSummary
+    {
+        get
+        {
+            var count = ProcessedMergeCount;
+            return _processedMergeNavigationIndex >= 0 && _processedMergeNavigationIndex < count
+                ? $"已处理合并 {count} 格，当前 {_processedMergeNavigationIndex + 1}/{count}"
+                : $"已处理合并 {count} 格";
+        }
+    }
     public int SelectedConflictCount => _selectedConflictIds.Count;
     public bool IsExternalMergeInvocation { get; private set; }
     public bool IsMergeCompleted { get; private set; }
@@ -223,7 +234,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         {
             var session = await Task.Run(() => _coordinator.Prepare(options));
             _session = session;
-            _automaticEditNavigationIndex = -1;
+            _processedMergeNavigationIndex = -1;
             _diagnosticLogger?.WritePrepared(session);
             _undo.Clear();
             _redo.Clear();
@@ -240,7 +251,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 : session.RequiresStructuralChangeConfirmation
                 ? $"检测到 {session.StructuralChanges.Count} 项列结构变化，保存前需要二次确认"
                 : session.Conflicts.Count == 0
-                ? $"分析完成：{session.Sheets.Count} 个工作表，{session.AutomaticEditCount} 项自动编辑，可直接保存"
+                ? $"分析完成：{session.Sheets.Count} 个工作表，{session.AutomaticMergeCount} 项自动合并结果，可直接保存"
                 : $"分析完成：{session.Sheets.Count} 个工作表，{session.Conflicts.Count} 个冲突待处理";
             var configurationStatus = new List<string>();
             if (session.IgnoredFields.Count > 0)
@@ -406,8 +417,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
     private void RefreshAfterResolutions()
     {
+        _processedMergeNavigationIndex = -1;
         ConflictsView.Refresh();
-        RefreshMergedGrid();
+        RefreshAllGrids();
         foreach (var sheet in SheetTabs)
             sheet.Refresh();
         NotifySessionChanged();
@@ -434,17 +446,18 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private void NavigateToNextAutomaticEdit()
     {
         var targets = SheetTabs
-            .SelectMany(sheet => sheet.Model.AutomaticEditLocations.Select(location =>
+            .SelectMany(sheet => sheet.Model.ProcessedMergeLocations.Select(location =>
                 (Sheet: sheet, Location: location)))
             .ToArray();
         if (targets.Length == 0)
         {
-            _automaticEditNavigationIndex = -1;
+            _processedMergeNavigationIndex = -1;
+            OnPropertyChanged(nameof(ProcessedMergeSummary));
             return;
         }
 
-        _automaticEditNavigationIndex = (_automaticEditNavigationIndex + 1) % targets.Length;
-        var target = targets[_automaticEditNavigationIndex];
+        _processedMergeNavigationIndex = (_processedMergeNavigationIndex + 1) % targets.Length;
+        var target = targets[_processedMergeNavigationIndex];
         if (!ReferenceEquals(SelectedSheet, target.Sheet))
             SelectedSheet = target.Sheet;
 
@@ -452,8 +465,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         _selectedConflictIds.Clear();
         NotifySelectionScopeChanged();
         ConflictNavigationRequested?.Invoke(target.Location.RowIndex, target.Location.ColumnIndex);
-        StatusText = $"已定位自动编辑 {_automaticEditNavigationIndex + 1}/{targets.Length}：" +
-                     $"{target.Sheet.SheetName}!{target.Location.DisplayLocation}";
+        StatusText = $"已定位处理结果 {_processedMergeNavigationIndex + 1}/{targets.Length}：" +
+                      $"{target.Sheet.SheetName}!{target.Location.DisplayLocation}";
+        OnPropertyChanged(nameof(ProcessedMergeSummary));
     }
 
     public void SelectConflict(string conflictId)
@@ -500,12 +514,6 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         LocalGrid = SelectedSheet.Model.Comparison.CreateTable(MergeGridSide.Local);
         RemoteGrid = SelectedSheet.Model.Comparison.CreateTable(MergeGridSide.Remote);
         MergedGrid = SelectedSheet.Model.Comparison.CreateTable(MergeGridSide.Merged);
-    }
-
-    private void RefreshMergedGrid()
-    {
-        if (SelectedSheet is not null)
-            MergedGrid = SelectedSheet.Model.Comparison.CreateTable(MergeGridSide.Merged);
     }
 
     private void ShowSheet(SheetTabViewModel sheet)
@@ -608,7 +616,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(ConflictCount));
         OnPropertyChanged(nameof(RemainingCount));
         OnPropertyChanged(nameof(ResolvedCount));
-        OnPropertyChanged(nameof(AutomaticEditCount));
+        OnPropertyChanged(nameof(AutomaticMergeCount));
+        OnPropertyChanged(nameof(ProcessedMergeCount));
+        OnPropertyChanged(nameof(ProcessedMergeSummary));
         RaiseCommandStates();
     }
 
@@ -627,10 +637,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
 
     private void ShowError(Exception exception)
     {
-        var detail = FindInnerException<GitStagingException>(exception)?.Message;
+        var gitException = FindInnerException<GitStagingException>(exception);
+        var detail = gitException?.Message ?? FindInnermostException(exception)?.Message;
+        var detailLabel = gitException is null ? "详细原因" : "Git 详细原因";
         var message = string.IsNullOrWhiteSpace(detail)
             ? exception.Message
-            : $"{exception.Message}{Environment.NewLine}{Environment.NewLine}Git 详细原因：{detail}";
+            : $"{exception.Message}{Environment.NewLine}{Environment.NewLine}{detailLabel}：{detail}";
         StatusText = message;
         MessageBox.Show(message, "Luban Excel 合并", MessageBoxButton.OK, MessageBoxImage.Error);
     }
@@ -663,6 +675,16 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 return match;
         }
         return null;
+    }
+
+    private static Exception? FindInnermostException(Exception exception)
+    {
+        var current = exception.InnerException;
+        if (current is null)
+            return null;
+        while (current.InnerException is not null)
+            current = current.InnerException;
+        return current;
     }
 
     private void SetPath(ref string field, string value, [CallerMemberName] string? name = null)

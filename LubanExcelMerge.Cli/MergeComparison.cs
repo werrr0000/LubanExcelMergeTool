@@ -47,10 +47,7 @@ public sealed class MergeComparison
     private readonly IReadOnlyDictionary<int, int> _remoteRowIndices;
     private readonly Func<int, bool> _mergedColumnIncluded;
     private readonly Func<int, string, CellPayload, CellPayload, CellPayload, CellPayload?> _structuralCellMerge;
-    private MergeGridTable? _baseTable;
-    private MergeGridTable? _localTable;
-    private MergeGridTable? _remoteTable;
-
+    private IReadOnlyList<MergeGridLocation>? _automaticMergeLocations;
     internal MergeComparison(
         IReadOnlyList<string> columnHeaders,
         IReadOnlyList<ComparisonRowPlan> rows,
@@ -67,24 +64,19 @@ public sealed class MergeComparison
         _structuralCellMerge = structuralCellMerge ?? ((_, _, _, _, _) => null);
         _localRowIndices = rows
             .Select((row, index) => (row.LocalRowNumber, Index: index))
-            .Where(item => item.LocalRowNumber is not null)
-            .ToDictionary(item => item.LocalRowNumber!.Value, item => item.Index);
+            .Where(item => item.LocalRowNumber is not null && !rows[item.Index].IsStructure)
+            .GroupBy(item => item.LocalRowNumber!.Value)
+            .ToDictionary(group => group.Key, group => group.First().Index);
         _remoteRowIndices = rows
             .Select((row, index) => (row.RemoteRowNumber, Index: index))
-            .Where(item => item.RemoteRowNumber is not null)
-            .ToDictionary(item => item.RemoteRowNumber!.Value, item => item.Index);
+            .Where(item => item.RemoteRowNumber is not null && !rows[item.Index].IsStructure)
+            .GroupBy(item => item.RemoteRowNumber!.Value)
+            .ToDictionary(group => group.Key, group => group.First().Index);
     }
 
     public IReadOnlyList<string> ColumnHeaders { get; }
 
-    public MergeGridTable CreateTable(MergeGridSide side) => side switch
-    {
-        MergeGridSide.Base => _baseTable ??= CreateTableCore(side),
-        MergeGridSide.Local => _localTable ??= CreateTableCore(side),
-        MergeGridSide.Remote => _remoteTable ??= CreateTableCore(side),
-        MergeGridSide.Merged => CreateTableCore(side),
-        _ => throw new ArgumentOutOfRangeException(nameof(side))
-    };
+    public MergeGridTable CreateTable(MergeGridSide side) => CreateTableCore(side);
 
     private MergeGridTable CreateTableCore(MergeGridSide side) => new(
         side switch
@@ -97,6 +89,67 @@ public sealed class MergeComparison
         },
         ColumnHeaders,
         new LazyReadOnlyList<MergeGridRow>(_rows.Count, rowIndex => CreateRow(_rows[rowIndex], side)));
+
+    public IReadOnlyList<MergeGridLocation> FindAutomaticMergeLocations()
+    {
+        if (_automaticMergeLocations is not null)
+            return _automaticMergeLocations;
+
+        var locations = new List<MergeGridLocation>();
+        for (var rowIndex = 0; rowIndex < _rows.Count; rowIndex++)
+        {
+            var row = _rows[rowIndex];
+            if (row.RowConflictId is not null)
+                continue;
+
+            var mergedCells = CreateMergedPayloads(row);
+            for (var columnIndex = 0; columnIndex < ColumnHeaders.Count; columnIndex++)
+            {
+                if (row.CellConflictIds.ContainsKey(columnIndex))
+                    continue;
+                var baseCell = row.BaseCells?[columnIndex] ?? CellPayload.Blank;
+                var mergedCell = mergedCells?[columnIndex] ?? CellPayload.Blank;
+                if (!mergedCell.ContentEquals(baseCell))
+                    locations.Add(CreateCellLocation(rowIndex, row, columnIndex));
+            }
+        }
+
+        _automaticMergeLocations = locations;
+        return _automaticMergeLocations;
+    }
+
+    public IReadOnlyList<MergeGridLocation> FindProcessedMergeLocations()
+    {
+        var locations = new List<MergeGridLocation>();
+        for (var rowIndex = 0; rowIndex < _rows.Count; rowIndex++)
+        {
+            var row = _rows[rowIndex];
+            var mergedCells = CreateMergedPayloads(row);
+            for (var columnIndex = 0; columnIndex < ColumnHeaders.Count; columnIndex++)
+            {
+                var conflictId = row.RowConflictId ?? row.CellConflictIds.GetValueOrDefault(columnIndex);
+                var conflictIsResolved = conflictId is not null && _conflicts[conflictId].IsResolved;
+                if (conflictIsResolved || conflictId is null && IsBlueMergedResult(row, columnIndex, mergedCells))
+                    locations.Add(CreateCellLocation(rowIndex, row, columnIndex));
+            }
+        }
+
+        return locations;
+    }
+
+    private static bool IsBlueMergedResult(
+        ComparisonRowPlan row,
+        int columnIndex,
+        IReadOnlyList<CellPayload>? mergedCells)
+    {
+        if (mergedCells is null || row.BaseCells is null)
+            return false;
+        var baseCell = row.BaseCells[columnIndex];
+        var mergedCell = mergedCells[columnIndex];
+        if (row.IsStructure && baseCell.Kind == CellValueKind.Blank && mergedCell.Kind != CellValueKind.Blank)
+            return false;
+        return !mergedCell.ContentEquals(baseCell);
+    }
 
     public MergeGridLocation? FindAutomaticEditLocation(WorkbookEdit edit)
     {
@@ -171,6 +224,15 @@ public sealed class MergeComparison
             rowIndex,
             FindFirstPopulatedColumn(row.RemoteCells),
             displayLocation);
+    }
+
+    private static MergeGridLocation CreateCellLocation(int rowIndex, ComparisonRowPlan row, int columnIndex)
+    {
+        var rowNumber = row.LocalRowNumber ?? row.RemoteRowNumber ?? row.BaseRowNumber ?? rowIndex + 1;
+        return new MergeGridLocation(
+            rowIndex,
+            columnIndex,
+            CellReference.Create(rowNumber, columnIndex));
     }
 
     private static int FindFirstPopulatedColumn(IReadOnlyList<CellPayload?>? cells)
@@ -311,6 +373,9 @@ public sealed class MergeComparison
         CellPayload[]? payloads,
         string? conflictId)
     {
+        if (conflictId is not null && _conflicts[conflictId].IsResolved)
+            return MergeGridCellState.Modified;
+
         if (row.IsStructure)
         {
             if (conflictId is not null)
@@ -335,8 +400,7 @@ public sealed class MergeComparison
             };
         }
 
-        if (conflictId is not null &&
-            (side != MergeGridSide.Merged || !_conflicts[conflictId].IsResolved))
+        if (conflictId is not null)
             return MergeGridCellState.Conflict;
 
         if (row.BaseCells is null)

@@ -2,13 +2,13 @@
 
 面向 Git 和 Fork 的 Luban `.xlsx` 三方冲突合并工具。程序读取 BASE、LOCAL、REMOTE，在桌面界面中展示差异和冲突，并将用户确认后的结果原子保存到 MERGED。
 
-当前版本：`1.1.0`
+当前版本：`1.2.2`
 
 ## 功能
 
 - BASE、LOCAL、REMOTE、MERGED 四表同步对比
-- 红色冲突、黄色删除、绿色新增、橙色元数据变更高亮
-- 上一处/下一处冲突定位及自动编辑循环定位
+- 红色未解决冲突、蓝色已处理修改、绿色新增、黄色删除、橙色待复核元数据高亮
+- 上一处/下一处冲突定位及自动合并结果循环定位
 - 单元格、整行和整列批量选择 BASE/LOCAL/REMOTE
 - 多 Sheet 切换与整工作簿保存门禁
 - 新增行、删除行、修改和删除/修改冲突处理
@@ -49,7 +49,7 @@ dotnet run --project LubanExcelMerge.OpenXml.Tests -c Release
 dotnet run --project LubanExcelMerge.Cli.Tests -c Release
 ```
 
-当前基线为 `105` 项测试。
+当前基线为 `115` 项测试。
 
 ## 发布
 
@@ -71,6 +71,6 @@ dotnet publish LubanExcelMerge.Gui/LubanExcelMerge.Gui.csproj `
 
 - 输入必须为 `.xlsx`。
 - 三方工作簿的 Sheet 名称、数量和顺序必须一致。
-- 不支持插入或删除 Luban 元数据行，也不支持改变数据起始行。
+- 支持插入或删除 Luban 元数据行；行数或数据起始行变化会以橙色高亮进入元数据复核，确认后自动移动后续数据行。
 - 删除唯一可用的主键字段后，如果无法建立可靠的行身份，主键校验会阻止合并。
 - 列移动会保留各分支已有的公式文本并触发重算，但不会猜测或重写公式引用；保存前应重点复核公式字段。
