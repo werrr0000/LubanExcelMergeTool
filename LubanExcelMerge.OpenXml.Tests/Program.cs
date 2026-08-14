@@ -32,6 +32,7 @@ try
         ("always mode without Office preserves existing output", () => AlwaysModeWithoutOfficePreservesOutput(sourcePath, testRoot)),
         ("auto mode without Office safely defers recalculation", () => AutoModeWithoutOfficeDefersRecalculation(sourcePath, testRoot)),
         ("auto mode failure safely defers recalculation", () => AutoRecalculationFailureDefers(sourcePath, testRoot)),
+        ("auto mode restores package when recalculation drops persons part", () => AutoModeRestoresDroppedPersonsPart(sourcePath, testRoot)),
         ("recalculation failure preserves existing output", () => RecalculationFailurePreservesOutput(sourcePath, testRoot)),
         ("archive safety limits are enforced", () => ArchiveLimitsAreEnforced(sourcePath))
     };
@@ -508,6 +509,39 @@ static string HashZipPart(string path, string partName)
     using var archive = ZipFile.OpenRead(path);
     using var stream = archive.GetEntry(partName)!.Open();
     return Convert.ToHexString(SHA256.HashData(stream));
+}
+
+static void AutoModeRestoresDroppedPersonsPart(string sourcePath, string testRoot)
+{
+    var sourceWithPersons = Path.Combine(testRoot, "persons-source.xlsx");
+    var outputPath = Path.Combine(testRoot, "persons-output.xlsx");
+    File.Copy(sourcePath, sourceWithPersons);
+    using (var archive = ZipFile.Open(sourceWithPersons, ZipArchiveMode.Update))
+    {
+        var entry = archive.CreateEntry("xl/persons/person.xml");
+        using var writer = new StreamWriter(entry.Open(), Encoding.UTF8, leaveOpen: false);
+        writer.Write("<personList xmlns=\"http://schemas.microsoft.com/office/word/2012/wordml\" />");
+    }
+
+    var recalculator = new FakeWorkbookRecalculator(true, workbookPath =>
+    {
+        using var archive = ZipFile.Open(workbookPath, ZipArchiveMode.Update);
+        archive.GetEntry("xl/persons/person.xml")?.Delete();
+    });
+    var result = new AtomicWorkbookSaver(recalculator: recalculator).Save(
+        sourceWithPersons,
+        outputPath,
+        new WorkbookEdit[]
+        {
+            new SetCellEdit("Data", "C4", new CellPayload(CellValueKind.String, "Changed"))
+        },
+        new WorkbookSaveOptions(WorkbookRecalculationMode.Auto, FormulaMayBeAffected: true));
+
+    Equal(WorkbookRecalculationStatus.DeferredAfterRecalculationFailure, result.RecalculationStatus);
+    Equal("Changed", new OpenXmlWorkbookReader().Read(outputPath).GetSheet("Data").GetCell("C4")!.Payload.RawValue);
+    using var outputArchive = ZipFile.OpenRead(outputPath);
+    True(outputArchive.GetEntry("xl/persons/person.xml") is not null);
+    True(result.RecalculationWarning?.Contains("xl/persons/person.xml", StringComparison.Ordinal) == true);
 }
 
 static XDocument ReadZipXml(string path, string partName)

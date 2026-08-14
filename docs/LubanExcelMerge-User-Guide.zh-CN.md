@@ -4,7 +4,7 @@
 
 Luban Excel Merge 用于解决 Git 或 Fork 中 Luban `.xlsx` 工作簿的三方合并冲突。工具读取 BASE、LOCAL、REMOTE，并将确认后的结果原子保存到 MERGED。
 
-正式发布版本：`1.2.2`。支持 Windows x64，公式重算优先使用 WPS 表格，无法使用时回退到 Microsoft Excel。
+正式发布版本：`1.2.2`。支持 Windows x64，公式重算优先使用 WPS 表格，无法使用时回退到 Microsoft Excel。`auto` 重算如果导致 OpenXML 部件（例如线程批注相关的 `xl/persons/person.xml`）丢失，会自动恢复重算前的完整合并结果，避免冲突解决被阻断或批注元数据丢失。
 
 ## 在 Fork 中使用
 

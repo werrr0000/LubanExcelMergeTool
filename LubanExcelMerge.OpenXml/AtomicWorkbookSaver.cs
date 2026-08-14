@@ -44,6 +44,9 @@ public sealed class AtomicWorkbookSaver
         var temporaryPath = Path.Combine(
             outputDirectory,
             $".{Path.GetFileName(absoluteOutput)}.{Guid.NewGuid():N}.tmp.xlsx");
+        var recalculationFallbackPath = Path.Combine(
+            outputDirectory,
+            $".{Path.GetFileName(absoluteOutput)}.{Guid.NewGuid():N}.pre-recalculation.xlsx");
         var shouldRecalculate = options.RecalculationMode == WorkbookRecalculationMode.Always ||
             options.RecalculationMode == WorkbookRecalculationMode.Auto && options.FormulaMayBeAffected;
         string? recalculationWarning = null;
@@ -74,6 +77,8 @@ public sealed class AtomicWorkbookSaver
             var candidateSnapshot = _reader.Read(temporaryPath);
             ValidateCandidate(sourceSnapshot, candidateSnapshot, edits, preserveFormulaCaches: true);
             ValidateUntouchedParts(sourceHashes, PackageIntegrity.HashParts(temporaryPath), touchedParts);
+            if (shouldRecalculate)
+                File.Copy(temporaryPath, recalculationFallbackPath, overwrite: false);
 
             var recalculationStatus = options.FormulaMayBeAffected &&
                                       options.RecalculationMode == WorkbookRecalculationMode.Never
@@ -93,11 +98,12 @@ public sealed class AtomicWorkbookSaver
                 }
                 catch (Exception exception) when (
                     options.RecalculationMode == WorkbookRecalculationMode.Auto &&
-                    exception is TimeoutException or InvalidOperationException)
+                    IsRecoverableRecalculationFailure(exception))
                 {
-                    recalculationWarning = GetInnermostMessage(exception);
+                    recalculationWarning = GetRecalculationFailureMessage(exception);
                     recalculationStatus = WorkbookRecalculationStatus.DeferredAfterRecalculationFailure;
-                    var fallbackSnapshot = _reader.Read(temporaryPath);
+                    File.Copy(recalculationFallbackPath, temporaryPath, overwrite: true);
+                    var fallbackSnapshot = _reader.Read(recalculationFallbackPath);
                     ValidateCandidate(sourceSnapshot, fallbackSnapshot, edits, preserveFormulaCaches: true);
                     candidateSnapshot = fallbackSnapshot;
                 }
@@ -119,7 +125,20 @@ public sealed class AtomicWorkbookSaver
         {
             if (File.Exists(temporaryPath))
                 File.Delete(temporaryPath);
+            if (File.Exists(recalculationFallbackPath))
+                File.Delete(recalculationFallbackPath);
         }
+    }
+
+    private static bool IsRecoverableRecalculationFailure(Exception exception) =>
+        exception is TimeoutException or InvalidOperationException or InvalidDataException or IOException;
+
+    private static string GetRecalculationFailureMessage(Exception exception)
+    {
+        var message = GetInnermostMessage(exception);
+        if (exception is InvalidDataException && message.Contains("包部件丢失", StringComparison.Ordinal))
+            return $"{message}；已恢复重算前的完整工作簿，未采用可能丢失批注或协作者信息的重算结果。";
+        return message;
     }
 
     private static string GetInnermostMessage(Exception exception)
