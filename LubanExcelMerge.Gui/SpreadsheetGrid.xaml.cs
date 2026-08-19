@@ -56,7 +56,7 @@ public partial class SpreadsheetGrid : UserControl
 
     private ScrollViewer? _scrollViewer;
     private bool _suppressSelectionEvent;
-    private readonly List<SpreadsheetRowItem> _rows = new();
+    private IReadOnlyList<SpreadsheetRowItem> _rows = Array.Empty<SpreadsheetRowItem>();
     private IReadOnlyList<string> _columnHeaders = Array.Empty<string>();
     private SpreadsheetSelection? _selection;
     private SpreadsheetRowItem? _scopeSelectedRow;
@@ -127,7 +127,7 @@ public partial class SpreadsheetGrid : UserControl
         {
             Grid.ItemsSource = null;
             Grid.Columns.Clear();
-            _rows.Clear();
+            _rows = Array.Empty<SpreadsheetRowItem>();
             _columnHeaders = Array.Empty<string>();
             return;
         }
@@ -140,9 +140,9 @@ public partial class SpreadsheetGrid : UserControl
             for (var columnIndex = 0; columnIndex < table.ColumnHeaders.Count; columnIndex++)
                 Grid.Columns.Add(CreateColumn(table.ColumnHeaders[columnIndex], columnIndex));
         }
-        _rows.Clear();
-        _rows.AddRange(Enumerable.Range(0, table.Rows.Count)
-            .Select(rowIndex => new SpreadsheetRowItem(table, rowIndex)));
+        _rows = Enumerable.Range(0, table.Rows.Count)
+            .Select(rowIndex => new SpreadsheetRowItem(table, rowIndex))
+            .ToArray();
         Grid.ItemsSource = _rows;
         if (_selection is not null)
             ApplySelection(_selection);
