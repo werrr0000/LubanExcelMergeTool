@@ -43,6 +43,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private bool _isBusy;
     private bool _isSaving;
     private bool _settingSelectionFromGrid;
+    private ConflictItemViewModel? _sheetNavigationTarget;
     private int _processedMergeNavigationIndex = -1;
 
     public MainWindowViewModel(
@@ -457,8 +458,21 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         var next = current < 0 ? 0 : (current + offset + allConflicts.Length) % allConflicts.Length;
         var target = allConflicts[next];
         if (!ReferenceEquals(SelectedSheet, target.Sheet))
-            SelectedSheet = target.Sheet;
-        SelectedConflict = target.Conflict;
+        {
+            _sheetNavigationTarget = target.Conflict;
+            try
+            {
+                SelectedSheet = target.Sheet;
+            }
+            finally
+            {
+                _sheetNavigationTarget = null;
+            }
+        }
+        else
+        {
+            SelectedConflict = target.Conflict;
+        }
     }
 
     private void NavigateToNextAutomaticEdit()
@@ -541,7 +555,9 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         foreach (var conflict in sheet.Conflicts)
             Conflicts.Add(conflict);
         RefreshAllGrids();
-        SelectedConflict = Conflicts.FirstOrDefault(conflict => conflict.IsMetadataChange && !conflict.IsResolved) ??
+        SelectedConflict = _sheetNavigationTarget is not null && Conflicts.Contains(_sheetNavigationTarget)
+            ? _sheetNavigationTarget
+            : Conflicts.FirstOrDefault(conflict => conflict.IsMetadataChange && !conflict.IsResolved) ??
                            Conflicts.FirstOrDefault(conflict => !conflict.IsResolved) ??
                            Conflicts.FirstOrDefault();
         ConflictsView.Refresh();

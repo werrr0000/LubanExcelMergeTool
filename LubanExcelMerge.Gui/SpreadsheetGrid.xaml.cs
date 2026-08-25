@@ -55,7 +55,7 @@ public partial class SpreadsheetGrid : UserControl
         new PropertyMetadata(null, OnTableChanged));
 
     private ScrollViewer? _scrollViewer;
-    private bool _suppressSelectionEvent;
+    private int _selectionEventSuppressionDepth;
     private IReadOnlyList<SpreadsheetRowItem> _rows = Array.Empty<SpreadsheetRowItem>();
     private IReadOnlyList<string> _columnHeaders = Array.Empty<string>();
     private SpreadsheetSelection? _selection;
@@ -96,13 +96,21 @@ public partial class SpreadsheetGrid : UserControl
         UpdateRowSelection(selection.Kind == SpreadsheetSelectionKind.Row ? row : null);
         UpdateColumnSelection(selection.Kind == SpreadsheetSelectionKind.Column ? columnIndex : null);
 
-        _suppressSelectionEvent = true;
-        Grid.CurrentCell = new DataGridCellInfo(row, column);
-        Grid.SelectedCells.Clear();
-        Grid.SelectedCells.Add(Grid.CurrentCell);
-        Grid.ScrollIntoView(row, column);
+        SuppressSelectionEvents();
+        try
+        {
+            Grid.CurrentCell = new DataGridCellInfo(row, column);
+            Grid.SelectedCells.Clear();
+            Grid.SelectedCells.Add(Grid.CurrentCell);
+            Grid.ScrollIntoView(row, column);
+        }
+        catch
+        {
+            ResumeSelectionEvents();
+            throw;
+        }
         Dispatcher.BeginInvoke(
-            () => _suppressSelectionEvent = false,
+            ResumeSelectionEvents,
             DispatcherPriority.Background);
     }
 
@@ -121,31 +129,41 @@ public partial class SpreadsheetGrid : UserControl
 
     private void ApplyTable(MergeGridTable? table)
     {
-        UpdateRowSelection(null);
-        UpdateColumnSelection(null);
-        if (table is null)
+        SuppressSelectionEvents();
+        try
         {
-            Grid.ItemsSource = null;
-            Grid.Columns.Clear();
-            _rows = Array.Empty<SpreadsheetRowItem>();
-            _columnHeaders = Array.Empty<string>();
-            return;
-        }
+            Grid.SelectedCells.Clear();
+            Grid.CurrentCell = new DataGridCellInfo();
+            UpdateRowSelection(null);
+            UpdateColumnSelection(null);
+            if (table is null)
+            {
+                Grid.ItemsSource = null;
+                Grid.Columns.Clear();
+                _rows = Array.Empty<SpreadsheetRowItem>();
+                _columnHeaders = Array.Empty<string>();
+                return;
+            }
 
-        var headersChanged = !_columnHeaders.SequenceEqual(table.ColumnHeaders, StringComparer.Ordinal);
-        _columnHeaders = table.ColumnHeaders;
-        if (headersChanged)
-        {
-            Grid.Columns.Clear();
-            for (var columnIndex = 0; columnIndex < table.ColumnHeaders.Count; columnIndex++)
-                Grid.Columns.Add(CreateColumn(table.ColumnHeaders[columnIndex], columnIndex));
+            var headersChanged = !_columnHeaders.SequenceEqual(table.ColumnHeaders, StringComparer.Ordinal);
+            _columnHeaders = table.ColumnHeaders;
+            if (headersChanged)
+            {
+                Grid.Columns.Clear();
+                for (var columnIndex = 0; columnIndex < table.ColumnHeaders.Count; columnIndex++)
+                    Grid.Columns.Add(CreateColumn(table.ColumnHeaders[columnIndex], columnIndex));
+            }
+            _rows = Enumerable.Range(0, table.Rows.Count)
+                .Select(rowIndex => new SpreadsheetRowItem(table, rowIndex))
+                .ToArray();
+            Grid.ItemsSource = _rows;
+            if (_selection is not null)
+                ApplySelection(_selection);
         }
-        _rows = Enumerable.Range(0, table.Rows.Count)
-            .Select(rowIndex => new SpreadsheetRowItem(table, rowIndex))
-            .ToArray();
-        Grid.ItemsSource = _rows;
-        if (_selection is not null)
-            ApplySelection(_selection);
+        finally
+        {
+            ResumeSelectionEvents();
+        }
     }
 
     private DataGridTextColumn CreateColumn(string header, int columnIndex)
@@ -215,11 +233,13 @@ public partial class SpreadsheetGrid : UserControl
 
     private void Grid_SelectedCellsChanged(object sender, SelectedCellsChangedEventArgs e)
     {
-        if (_suppressSelectionEvent || Table is null || Grid.CurrentCell.Item is not SpreadsheetRowItem row)
+        if (SelectionEventsSuppressed || Table is null || Grid.CurrentCell.Item is not SpreadsheetRowItem row)
             return;
         var rowIndex = row.RowIndex;
         var columnIndex = Grid.CurrentCell.Column?.DisplayIndex ?? -1;
-        if (rowIndex < 0 || columnIndex < 0 || columnIndex >= row.Source.Cells.Count)
+        if (rowIndex < 0 || rowIndex >= _rows.Count || rowIndex >= Table.Rows.Count ||
+            !ReferenceEquals(_rows[rowIndex], row) ||
+            columnIndex < 0 || columnIndex >= row.Source.Cells.Count)
             return;
         var selection = new SpreadsheetSelection(SpreadsheetSelectionKind.Cell, rowIndex, columnIndex);
         ApplySelection(selection);
@@ -260,17 +280,35 @@ public partial class SpreadsheetGrid : UserControl
 
     private void RaiseSelectionChanged(SpreadsheetSelection selection)
     {
-        if (Table is null)
+        var table = Table;
+        if (table is null || selection.ColumnIndex < 0)
             return;
         IEnumerable<string?> ids = selection.Kind switch
         {
-            SpreadsheetSelectionKind.Row => Table.Rows[selection.RowIndex].Cells.Select(cell => cell.ConflictId),
-            SpreadsheetSelectionKind.Column => Table.Rows.Select(row => row.Cells[selection.ColumnIndex].ConflictId),
-            _ => new[] { Table.Rows[selection.RowIndex].Cells[selection.ColumnIndex].ConflictId }
+            SpreadsheetSelectionKind.Row when selection.RowIndex >= 0 && selection.RowIndex < table.Rows.Count =>
+                table.Rows[selection.RowIndex].Cells.Select(cell => cell.ConflictId),
+            SpreadsheetSelectionKind.Column => table.Rows
+                .Where(row => selection.ColumnIndex < row.Cells.Count)
+                .Select(row => row.Cells[selection.ColumnIndex].ConflictId),
+            SpreadsheetSelectionKind.Cell when selection.RowIndex >= 0 &&
+                                                selection.RowIndex < table.Rows.Count &&
+                                                selection.ColumnIndex < table.Rows[selection.RowIndex].Cells.Count =>
+                new[] { table.Rows[selection.RowIndex].Cells[selection.ColumnIndex].ConflictId },
+            _ => Array.Empty<string?>()
         };
         SelectionChanged?.Invoke(this, new SpreadsheetSelectionEventArgs(
             selection,
             ids.Where(id => id is not null).Cast<string>().Distinct(StringComparer.Ordinal).ToArray()));
+    }
+
+    private bool SelectionEventsSuppressed => _selectionEventSuppressionDepth > 0;
+
+    private void SuppressSelectionEvents() => _selectionEventSuppressionDepth++;
+
+    private void ResumeSelectionEvents()
+    {
+        if (_selectionEventSuppressionDepth > 0)
+            _selectionEventSuppressionDepth--;
     }
 
     private void UpdateRowSelection(SpreadsheetRowItem? row)

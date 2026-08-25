@@ -48,9 +48,10 @@ dotnet run --project LubanExcelMerge.Core.Tests -c Release
 dotnet run --project LubanExcelMerge.Luban.Tests -c Release
 dotnet run --project LubanExcelMerge.OpenXml.Tests -c Release
 dotnet run --project LubanExcelMerge.Cli.Tests -c Release
+dotnet run --project LubanExcelMerge.Gui.Tests -c Release
 ```
 
-当前基线为 `124` 项测试。
+当前基线为 `125` 项测试。
 
 ## 发布
 
