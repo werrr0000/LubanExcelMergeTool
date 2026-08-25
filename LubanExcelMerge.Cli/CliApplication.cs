@@ -37,6 +37,8 @@ public static class CliApplication
                 output.WriteLine($"已保留 LOCAL 的忽略字段：{string.Join("、", result.IgnoredFields)}。");
             if (result.LogicalTableUniquenessValidated)
                 output.WriteLine("全逻辑表唯一性：已检查。");
+            if (!result.LogicalTableRegistered)
+                output.WriteLine($"警告：{result.LogicalTableInput} 未在 __tables__.csv 登记，本次按工作簿首字段推断主键，未执行跨文件唯一性检查。");
             output.WriteLine(result.RecalculationStatus switch
             {
                 LubanExcelMerge.OpenXml.WorkbookRecalculationStatus.Completed =>

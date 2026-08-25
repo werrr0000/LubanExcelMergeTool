@@ -21,6 +21,12 @@ public sealed record AppendRowEdit(
     IReadOnlyList<CellWrite> Cells,
     int? SourceRowNumber = null) : WorkbookEdit(SheetName);
 
+public sealed record InsertRowEdit(
+    string SheetName,
+    int RowNumber,
+    IReadOnlyList<CellWrite> Cells,
+    int? SourceRowNumber = null) : WorkbookEdit(SheetName);
+
 public sealed record RowWrite(
     IReadOnlyList<CellWrite> Cells);
 

@@ -158,6 +158,7 @@ public sealed class MergeComparison
             SetCellEdit setCell => FindSetCellLocation(setCell),
             DeleteRowEdit deleteRow => FindDeleteRowLocation(deleteRow),
             AppendRowEdit appendRow => FindAppendRowLocation(appendRow),
+            InsertRowEdit insertRow => FindInsertRowLocation(insertRow),
             _ => null
         };
     }
@@ -188,10 +189,16 @@ public sealed class MergeComparison
     }
 
     private MergeGridLocation? FindAppendRowLocation(AppendRowEdit edit)
+        => FindAddedRowLocation(edit.SourceRowNumber, edit.Cells);
+
+    private MergeGridLocation? FindInsertRowLocation(InsertRowEdit edit)
+        => FindAddedRowLocation(edit.SourceRowNumber, edit.Cells);
+
+    private MergeGridLocation? FindAddedRowLocation(int? sourceRowNumber, IReadOnlyList<CellWrite> cells)
     {
-        if (edit.SourceRowNumber is int sourceRowNumber &&
-            _remoteRowIndices.TryGetValue(sourceRowNumber, out var indexedRow) &&
-            IsMatchingRemoteAddition(_rows[indexedRow], edit))
+        if (sourceRowNumber is int source &&
+            _remoteRowIndices.TryGetValue(source, out var indexedRow) &&
+            IsMatchingRemoteAddition(_rows[indexedRow], cells))
         {
             return CreateAppendLocation(indexedRow, _rows[indexedRow]);
         }
@@ -199,19 +206,19 @@ public sealed class MergeComparison
         for (var rowIndex = 0; rowIndex < _rows.Count; rowIndex++)
         {
             var row = _rows[rowIndex];
-            if (IsMatchingRemoteAddition(row, edit))
+            if (IsMatchingRemoteAddition(row, cells))
                 return CreateAppendLocation(rowIndex, row);
         }
 
         return null;
     }
 
-    private static bool IsMatchingRemoteAddition(ComparisonRowPlan row, AppendRowEdit edit) =>
+    private static bool IsMatchingRemoteAddition(ComparisonRowPlan row, IReadOnlyList<CellWrite> cells) =>
         !row.IsStructure &&
         row.BaseCells is null &&
         row.LocalCells is null &&
         row.RemoteCells is not null &&
-        edit.Cells.All(cell =>
+        cells.All(cell =>
             cell.ColumnIndex < row.RemoteCells.Length &&
             row.RemoteCells[cell.ColumnIndex].ContentEquals(cell.Payload));
 

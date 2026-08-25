@@ -90,6 +90,10 @@ try
         ("stager discovers nested ConfigLuban repository", () => GitStagerDiscoversNestedConfigRepository(testRoot)),
         ("real Git LFS mergetool completes four-file protocol", () => GitLfsMergetoolEndToEnd(testRoot)),
         ("non-conflicting four-file merge succeeds", () => NonConflictingMerge(testRoot)),
+        ("REMOTE additions preserve their relative positions", () => RemoteAdditionsPreserveRelativePositions(testRoot)),
+        ("GUI infers a safe key for an unregistered workbook", () => GuiInfersUnregisteredWorkbookKey(testRoot)),
+        ("headless merge rejects an unregistered workbook by default", () => HeadlessRejectsUnregisteredWorkbook(testRoot)),
+        ("headless merge can explicitly allow an unregistered workbook", () => HeadlessAllowsUnregisteredWorkbookWhenExplicit(testRoot)),
         ("mode one merges the single record by field", () => ModeOneMergesSingleRecord(testRoot)),
         ("mode one field conflict requires resolution", () => ModeOneFieldConflictRequiresResolution(testRoot)),
         ("mode one rejects multiple data records", () => ModeOneRejectsMultipleRecords(testRoot)),
@@ -584,6 +588,111 @@ static void NonConflictingMerge(string testRoot)
     True(output.ToString().Contains("写入单元格=1", StringComparison.Ordinal));
     True(output.ToString().Contains("新增记录=1", StringComparison.Ordinal));
     True(output.ToString().Contains("删除记录=1", StringComparison.Ordinal));
+}
+
+static void RemoteAdditionsPreserveRelativePositions(string testRoot)
+{
+    var scenario = CreateScenario(Path.Combine(testRoot, "positioned-remote-additions"));
+    var commonRows = new[]
+    {
+        new[] { "2", "two", "same" },
+        new[] { "5", "five", "same" }
+    };
+    TestWorkbookFactory.Create(scenario.BasePath, commonRows);
+    TestWorkbookFactory.Create(scenario.LocalPath, commonRows);
+    TestWorkbookFactory.Create(scenario.RemotePath, new[]
+    {
+        new[] { "1", "one", "remote" },
+        new[] { "2", "two", "same" },
+        new[] { "3", "three", "remote" },
+        new[] { "4", "four", "remote" },
+        new[] { "5", "five", "same" },
+        new[] { "6", "six", "remote" }
+    });
+
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+    var previewOrder = session.Comparison.CreateTable(MergeGridSide.Merged).Rows
+        .Where(row => row.RecordKey is not null && !row.RecordKey.StartsWith("structure:", StringComparison.Ordinal))
+        .Select(row => row.RecordKey)
+        .ToArray();
+    True(previewOrder.SequenceEqual(new[] { "1", "2", "3", "4", "5", "6" }, StringComparer.Ordinal));
+
+    session.Save();
+    var output = new OpenXmlWorkbookReader().Read(scenario.OutputPath).GetSheet("Data");
+    var outputOrder = output.Rows
+        .Where(row => row.RowNumber >= 4)
+        .Select(row => row.GetCell(1)?.Payload.RawValue)
+        .Where(value => value is not null)
+        .ToArray();
+    True(outputOrder.SequenceEqual(new[] { "1", "2", "3", "4", "5", "6" }, StringComparer.Ordinal));
+}
+
+static void GuiInfersUnregisteredWorkbookKey(string testRoot)
+{
+    var scenario = CreateUnregisteredScenario(Path.Combine(testRoot, "unregistered-gui"));
+    CreateUnregisteredWorkbooks(scenario);
+    var options = CommandLineParser.Parse(CreateArguments(scenario)) with
+    {
+        Headless = false,
+        AllowUnregisteredTable = true
+    };
+
+    var session = new LubanMergeCoordinator().Prepare(options);
+
+    True(!session.LogicalTableRegistered);
+    Equal("Test.xlsx", session.LogicalTableInput);
+    Equal("Id", session.KeyName);
+    True(!session.LogicalTableUniquenessValidated);
+    True(session.CanSave);
+}
+
+static void HeadlessRejectsUnregisteredWorkbook(string testRoot)
+{
+    var scenario = CreateUnregisteredScenario(Path.Combine(testRoot, "unregistered-headless-rejected"));
+    CreateUnregisteredWorkbooks(scenario);
+    using var output = new StringWriter();
+    using var error = new StringWriter();
+
+    var exitCode = CliApplication.Run(CreateArguments(scenario), output, error);
+
+    EqualExit(ExitCodes.UnsafeWorkbook, exitCode, error);
+    True(error.ToString().Contains("请在 input 列登记 Test.xlsx", StringComparison.Ordinal));
+    True(error.ToString().Contains("--allow-unregistered-table", StringComparison.Ordinal));
+}
+
+static void HeadlessAllowsUnregisteredWorkbookWhenExplicit(string testRoot)
+{
+    var scenario = CreateUnregisteredScenario(Path.Combine(testRoot, "unregistered-headless-allowed"));
+    CreateUnregisteredWorkbooks(scenario);
+    using var output = new StringWriter();
+    using var error = new StringWriter();
+
+    var exitCode = CliApplication.Run(
+        CreateArguments(scenario).Append("--allow-unregistered-table").ToArray(),
+        output,
+        error);
+
+    EqualExit(ExitCodes.Success, exitCode, error);
+    True(output.ToString().Contains("未在 __tables__.csv 登记", StringComparison.Ordinal));
+    Equal("remote", ReadDataRows(scenario.OutputPath)["1"]["B"]);
+}
+
+static TestScenario CreateUnregisteredScenario(string root)
+{
+    var scenario = CreateScenario(root);
+    File.WriteAllText(
+        Path.Combine(Path.GetDirectoryName(scenario.OutputPath)!, "__tables__.csv"),
+        "##var,full_name,value_type,read_schema_from_file,input,index,mode,group\n" +
+        ",TbOther,Other,TRUE,Other.xlsx,Id,map,c\n",
+        new UTF8Encoding(false));
+    return scenario;
+}
+
+static void CreateUnregisteredWorkbooks(TestScenario scenario)
+{
+    TestWorkbookFactory.Create(scenario.BasePath, new[] { new[] { "1", "same", "old" } });
+    TestWorkbookFactory.Create(scenario.LocalPath, new[] { new[] { "1", "same", "old" } });
+    TestWorkbookFactory.Create(scenario.RemotePath, new[] { new[] { "1", "same", "remote" } });
 }
 
 static void AutomaticMergeResultsIncludeBothSides(string testRoot)

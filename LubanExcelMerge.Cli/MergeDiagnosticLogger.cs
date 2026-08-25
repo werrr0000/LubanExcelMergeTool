@@ -107,7 +107,9 @@ public sealed class MergeDiagnosticLogger
                 deletedRecords = sheet.DeletedRecords,
                 metadataChanges = sheet.MetadataChangeCount
             }),
-            logicalTableUniquenessValidated = session.LogicalTableUniquenessValidated
+            logicalTableUniquenessValidated = session.LogicalTableUniquenessValidated,
+            logicalTableRegistered = session.LogicalTableRegistered,
+            logicalTableInput = session.LogicalTableInput
         });
     }
 
@@ -129,6 +131,8 @@ public sealed class MergeDiagnosticLogger
             projectValidationCompleted = result.ProjectValidationCompleted,
             fullExportValidationCompleted = result.FullExportValidationCompleted,
             logicalTableUniquenessValidated = result.LogicalTableUniquenessValidated,
+            logicalTableRegistered = result.LogicalTableRegistered,
+            logicalTableInput = result.LogicalTableInput,
             ignoredFields = result.IgnoredFields,
             preparationMilliseconds = new
             {
@@ -163,6 +167,8 @@ public sealed class MergeDiagnosticLogger
             fullExportValidationCompleted = result.FullExportValidationCompleted,
             gitStaged,
             logicalTableUniquenessValidated = session.LogicalTableUniquenessValidated,
+            logicalTableRegistered = session.LogicalTableRegistered,
+            logicalTableInput = session.LogicalTableInput,
             ignoredFields = session.IgnoredFields,
             metadataChanges = session.MetadataChangeCount,
             processedMergeResults = session.ProcessedMergeCount,

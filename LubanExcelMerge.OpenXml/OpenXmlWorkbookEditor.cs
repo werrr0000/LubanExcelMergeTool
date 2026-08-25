@@ -26,7 +26,10 @@ public sealed class OpenXmlWorkbookEditor
                 ?? throw new InvalidDataException($"工作表 {editGroup.Key} 缺少 sheetData。");
             var cleanedEmptyFormatting = false;
 
-            foreach (var edit in editGroup)
+            var indexedEdits = editGroup
+                .Select((edit, index) => (Edit: edit, Index: index))
+                .ToArray();
+            foreach (var (edit, _) in indexedEdits.Where(item => item.Edit is not InsertRowEdit))
             {
                 switch (edit)
                 {
@@ -49,6 +52,15 @@ public sealed class OpenXmlWorkbookEditor
                     default:
                         throw new NotSupportedException($"不支持的工作簿编辑类型：{edit.GetType().Name}。");
                 }
+            }
+
+            foreach (var (edit, _) in indexedEdits
+                         .Where(item => item.Edit is InsertRowEdit)
+                         .OrderByDescending(item => ((InsertRowEdit)item.Edit).RowNumber)
+                         .ThenByDescending(item => item.Index))
+            {
+                var insertRow = (InsertRowEdit)edit;
+                InsertRow(sheetData, insertRow.RowNumber, insertRow.Cells);
             }
 
             if (cleanedEmptyFormatting)
@@ -141,6 +153,17 @@ public sealed class OpenXmlWorkbookEditor
             SetCell(sheetData, CellReference.Create(rowNumber, cell.ColumnIndex), cell.Payload, cell.StyleIndex);
     }
 
+    private static void InsertRow(XElement sheetData, int rowNumber, IReadOnlyList<CellWrite> cells)
+    {
+        if (rowNumber < 1)
+            throw new ArgumentOutOfRangeException(nameof(rowNumber));
+
+        ShiftFormulaReferences(sheetData, rowNumber, 1);
+        ShiftPhysicalRows(sheetData, rowNumber, 1);
+        foreach (var cell in cells.OrderBy(cell => cell.ColumnIndex))
+            SetCell(sheetData, CellReference.Create(rowNumber, cell.ColumnIndex), cell.Payload, cell.StyleIndex);
+    }
+
     private static void ReplaceMetadataRows(XElement sheetData, ReplaceMetadataRowsEdit edit)
     {
         if (edit.StartRowNumber < 1 || edit.ExistingRowCount < 0)
@@ -159,24 +182,7 @@ public sealed class OpenXmlWorkbookEditor
         if (delta != 0)
         {
             ShiftFormulaReferences(sheetData, oldEnd, delta);
-            var moving = rows.Where(item => item.Number >= oldEnd)
-                .OrderBy(item => item.Number)
-                .ToArray();
-            if (delta > 0)
-                moving = moving.Reverse().ToArray();
-            foreach (var item in moving)
-            {
-                var newNumber = item.Number + delta;
-                item.Row.SetAttributeValue("r", newNumber);
-                foreach (var cell in item.Row.Elements(OpenXmlNamespaces.Spreadsheet + "c"))
-                {
-                    var address = (string?)cell.Attribute("r");
-                    if (address is null)
-                        continue;
-                    var reference = CellReference.Parse(address);
-                    cell.SetAttributeValue("r", CellReference.Create(newNumber, reference.ColumnIndex));
-                }
-            }
+            ShiftPhysicalRows(sheetData, oldEnd, delta);
         }
 
         for (var index = 0; index < edit.Rows.Count; index++)
@@ -197,6 +203,30 @@ public sealed class OpenXmlWorkbookEditor
             var sharedRange = (string?)formula.Attribute("ref");
             if (!string.IsNullOrEmpty(sharedRange))
                 formula.SetAttributeValue("ref", FormulaReferenceShifter.ShiftRows(sharedRange, firstMovedRow, delta));
+        }
+    }
+
+    private static void ShiftPhysicalRows(XElement sheetData, int firstMovedRow, int delta)
+    {
+        var moving = sheetData.Elements(OpenXmlNamespaces.Spreadsheet + "row")
+            .Select(row => (Row: row, Number: int.TryParse((string?)row.Attribute("r"), out var number) ? number : 0))
+            .Where(item => item.Number >= firstMovedRow)
+            .OrderBy(item => item.Number)
+            .ToArray();
+        if (delta > 0)
+            moving = moving.Reverse().ToArray();
+        foreach (var item in moving)
+        {
+            var newNumber = item.Number + delta;
+            item.Row.SetAttributeValue("r", newNumber);
+            foreach (var cell in item.Row.Elements(OpenXmlNamespaces.Spreadsheet + "c"))
+            {
+                var address = (string?)cell.Attribute("r");
+                if (address is null)
+                    continue;
+                var reference = CellReference.Parse(address);
+                cell.SetAttributeValue("r", CellReference.Create(newNumber, reference.ColumnIndex));
+            }
         }
     }
 

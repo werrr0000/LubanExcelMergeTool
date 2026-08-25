@@ -171,6 +171,8 @@ public sealed class PreparedMergeSession
         string outputPath,
         IReadOnlyList<string> ignoredFields,
         bool logicalTableUniquenessValidated,
+        bool logicalTableRegistered,
+        string logicalTableInput,
         IReadOnlyList<PreparedSheetMerge> sheets,
         int localFormulaCount,
         WorkbookRecalculationMode recalculationMode,
@@ -191,6 +193,8 @@ public sealed class PreparedMergeSession
         OutputPath = outputPath;
         IgnoredFields = ignoredFields;
         LogicalTableUniquenessValidated = logicalTableUniquenessValidated;
+        LogicalTableRegistered = logicalTableRegistered;
+        LogicalTableInput = logicalTableInput;
         Sheets = sheets;
         Conflicts = sheets.SelectMany(sheet => sheet.Conflicts).ToArray();
         _localFormulaCount = localFormulaCount;
@@ -219,6 +223,8 @@ public sealed class PreparedMergeSession
     public string OutputPath { get; }
     public IReadOnlyList<string> IgnoredFields { get; }
     public bool LogicalTableUniquenessValidated { get; }
+    public bool LogicalTableRegistered { get; }
+    public string LogicalTableInput { get; }
     public MergePreparationTimings PreparationTimings { get; }
     public IReadOnlyList<PreparedSheetMerge> Sheets { get; }
     public IReadOnlyList<ResolvableMergeConflict> Conflicts { get; }
@@ -337,6 +343,7 @@ public sealed class PreparedMergeSession
     {
         SetCellEdit setCell => setCell.Payload.Kind == CellValueKind.Formula,
         AppendRowEdit appendRow => appendRow.Cells.Any(cell => cell.Payload.Kind == CellValueKind.Formula),
+        InsertRowEdit insertRow => insertRow.Cells.Any(cell => cell.Payload.Kind == CellValueKind.Formula),
         _ => false
     };
 }

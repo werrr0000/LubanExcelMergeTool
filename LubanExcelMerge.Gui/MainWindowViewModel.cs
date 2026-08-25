@@ -20,6 +20,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private readonly Stack<ResolutionBatch> _redo = new();
     private readonly HashSet<string> _selectedConflictIds = new(StringComparer.Ordinal);
     private readonly Func<IReadOnlyList<string>, bool> _confirmStructuralChanges;
+    private readonly Func<string, bool> _confirmUnregisteredTable;
     private MergeDiagnosticLogger? _diagnosticLogger;
     private PreparedMergeSession? _session;
     private SheetTabViewModel? _selectedSheet;
@@ -44,9 +45,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private bool _settingSelectionFromGrid;
     private int _processedMergeNavigationIndex = -1;
 
-    public MainWindowViewModel(Func<IReadOnlyList<string>, bool>? confirmStructuralChanges = null)
+    public MainWindowViewModel(
+        Func<IReadOnlyList<string>, bool>? confirmStructuralChanges = null,
+        Func<string, bool>? confirmUnregisteredTable = null)
     {
         _confirmStructuralChanges = confirmStructuralChanges ?? ConfirmStructuralChanges;
+        _confirmUnregisteredTable = confirmUnregisteredTable ?? ConfirmUnregisteredTable;
         RecalculationModes =
         [
             new RecalculationModeOption("auto", "自动（推荐）"),
@@ -232,7 +236,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         StatusText = "正在分析三个版本...";
         try
         {
-            var session = await Task.Run(() => _coordinator.Prepare(options));
+            var session = await Task.Run(() => _coordinator.Prepare(options with
+            {
+                AllowUnregisteredTable = true
+            }));
             _session = session;
             _processedMergeNavigationIndex = -1;
             _diagnosticLogger?.WritePrepared(session);
@@ -258,6 +265,11 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
                 configurationStatus.Add($"忽略字段保留 LOCAL：{string.Join("、", session.IgnoredFields)}");
             if (session.LogicalTableUniquenessValidated)
                 configurationStatus.Add("已检查全逻辑表唯一性");
+            if (!session.LogicalTableRegistered)
+            {
+                configurationStatus.Add(
+                    $"警告：{session.LogicalTableInput} 未在 __tables__.csv 登记，已按首字段 {session.KeyName} 推断主键，未检查跨文件唯一性");
+            }
             StatusText = configurationStatus.Count == 0
                 ? analysisStatus
                 : $"{analysisStatus}；{string.Join("；", configurationStatus)}";
@@ -279,6 +291,12 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             return;
         if (_session.RequiresStructuralChangeConfirmation &&
             !_confirmStructuralChanges(_session.StructuralChanges))
+        {
+            StatusText = "已取消保存，MERGED 未被修改";
+            return;
+        }
+        if (!_session.LogicalTableRegistered &&
+            !_confirmUnregisteredTable(_session.LogicalTableInput))
         {
             StatusText = "已取消保存，MERGED 未被修改";
             return;
@@ -661,6 +679,23 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         return MessageBox.Show(
             message,
             "确认保存列结构变更",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No) == MessageBoxResult.Yes;
+    }
+
+    private static bool ConfirmUnregisteredTable(string relativePath)
+    {
+        var message =
+            $"{relativePath} 未在 __tables__.csv 的 input 列登记。" +
+            Environment.NewLine + Environment.NewLine +
+            "工具已按工作簿首字段推断主键，并验证 BASE、LOCAL、REMOTE 三侧的主键均非空且唯一，" +
+            "但无法确认 mode、逻辑表兄弟文件或跨文件主键唯一性。" +
+            Environment.NewLine + Environment.NewLine +
+            "建议取消并先补充 __tables__.csv；是否仍要保存并执行后续校验与 Git staging？";
+        return MessageBox.Show(
+            message,
+            "确认合并未登记工作簿",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning,
             MessageBoxResult.No) == MessageBoxResult.Yes;

@@ -19,6 +19,7 @@ try
         ("cell references round trip", CellReferencesRoundTrip),
         ("minimal edit preserves style and untouched formula", () => MinimalEditPreservesWorkbook(sourcePath, testRoot)),
         ("row append and delete produce reopenable output", () => AppendAndDeleteRows(sourcePath, testRoot)),
+        ("row insertion preserves order and shifts formulas", () => InsertRowsPreserveOrderAndShiftFormulas(sourcePath, testRoot)),
         ("metadata replacement shifts following data rows", () => MetadataReplacementShiftsRows(sourcePath, testRoot)),
         ("styled blank rows do not displace appended data", () => StyledBlankRowsDoNotDisplaceAppend(sourcePath, testRoot)),
         ("cleanup removes empty formatting without losing formulas", () => CleanupEmptyFormattingPreservesContent(sourcePath, testRoot)),
@@ -171,6 +172,33 @@ static void AppendAndDeleteRows(string sourcePath, string testRoot)
     Equal("3", output.GetCell("B5")!.Payload.RawValue);
     Equal("Added", output.GetCell("C5")!.Payload.RawValue);
     True(output.GetCell("D5") is null);
+}
+
+static void InsertRowsPreserveOrderAndShiftFormulas(string sourcePath, string testRoot)
+{
+    var outputPath = Path.Combine(testRoot, "insert-rows.xlsx");
+    new AtomicWorkbookSaver().Save(sourcePath, outputPath, new WorkbookEdit[]
+    {
+        new InsertRowEdit("Data", 5, new[]
+        {
+            new CellWrite(1, new CellPayload(CellValueKind.Number, "8")),
+            new CellWrite(2, new CellPayload(CellValueKind.String, "First"))
+        }),
+        new InsertRowEdit("Data", 5, new[]
+        {
+            new CellWrite(1, new CellPayload(CellValueKind.Number, "9")),
+            new CellWrite(2, new CellPayload(CellValueKind.String, "Second"))
+        })
+    });
+
+    var output = new OpenXmlWorkbookReader().Read(outputPath).GetSheet("Data");
+    Equal("8", output.GetCell("B5")!.Payload.RawValue);
+    Equal("First", output.GetCell("C5")!.Payload.RawValue);
+    Equal("9", output.GetCell("B6")!.Payload.RawValue);
+    Equal("Second", output.GetCell("C6")!.Payload.RawValue);
+    Equal("2", output.GetCell("B7")!.Payload.RawValue);
+    Equal("B7*2", output.GetCell("D7")!.Payload.FormulaText);
+    Equal("4", output.GetCell("D7")!.Payload.CachedValue);
 }
 
 static void MetadataReplacementShiftsRows(string sourcePath, string testRoot)

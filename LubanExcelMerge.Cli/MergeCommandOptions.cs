@@ -24,6 +24,7 @@ public sealed record MergeCommandOptions(
     public IReadOnlyList<string>? InactivePaths { get; init; }
     public bool FullExportValidationEnabled { get; init; }
     public string? FullExportValidationCommand { get; init; }
+    public bool AllowUnregisteredTable { get; init; }
 }
 
 public static class CommandLineParser
@@ -36,7 +37,7 @@ public static class CommandLineParser
 
     private static readonly HashSet<string> SwitchOptions = new(StringComparer.Ordinal)
     {
-        "--headless", "--validate", "--validate-full"
+        "--headless", "--validate", "--validate-full", "--allow-unregistered-table"
     };
 
     public static MergeCommandOptions Parse(IReadOnlyList<string> args)
@@ -86,7 +87,8 @@ public static class CommandLineParser
             recalculation,
             values.GetValueOrDefault("--log"))
         {
-            FullExportValidationEnabled = switches.Contains("--validate-full")
+            FullExportValidationEnabled = switches.Contains("--validate-full"),
+            AllowUnregisteredTable = switches.Contains("--allow-unregistered-table")
         };
     }
 
@@ -94,7 +96,7 @@ public static class CommandLineParser
         "LubanExcelMerge merge --base <BASE.xlsx> --local <LOCAL.xlsx> --remote <REMOTE.xlsx> " +
         "--output <MERGED.xlsx> --repo-root <仓库根目录> [--data-root <Datas>] [--tables <__tables__.csv>] " +
         "[--config <luban-excel-merge.json>] [--recalculate-with-excel <auto|always|never>] " +
-        "[--validate] [--validate-full] [--log <日志路径>] [--headless]" +
+        "[--validate] [--validate-full] [--allow-unregistered-table] [--log <日志路径>] [--headless]" +
         Environment.NewLine +
         "LubanExcelMerge git-config --gui <LubanExcelMerge.Gui.exe> --repo-root <仓库根目录> [--tool-name <名称>]" +
         Environment.NewLine +

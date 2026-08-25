@@ -22,6 +22,8 @@ public sealed record MergeRunResult(
     bool FullExportValidationCompleted,
     IReadOnlyList<string> IgnoredFields,
     bool LogicalTableUniquenessValidated,
+    bool LogicalTableRegistered,
+    string LogicalTableInput,
     MergePreparationTimings PreparationTimings,
     string? RecalculationWarning = null)
 {
@@ -71,6 +73,8 @@ public sealed class LubanMergeCoordinator
                 false,
                 session.IgnoredFields,
                 session.LogicalTableUniquenessValidated,
+                session.LogicalTableRegistered,
+                session.LogicalTableInput,
                 session.PreparationTimings);
         }
 
@@ -90,6 +94,8 @@ public sealed class LubanMergeCoordinator
             saveResult.FullExportValidationCompleted,
             session.IgnoredFields,
             session.LogicalTableUniquenessValidated,
+            session.LogicalTableRegistered,
+            session.LogicalTableInput,
             session.PreparationTimings,
             saveResult.RecalculationWarning);
     }
@@ -112,13 +118,15 @@ public sealed class LubanMergeCoordinator
             MergeOutputRecovery.RecoverPending(outputPath);
 
         var metadata = MetadataDiscovery.Discover(options);
-        LogicalTableDefinition logicalTable;
+        LogicalTableDefinition? logicalTable;
+        string logicalTableInput;
         LogicalTableCatalog catalog;
         try
         {
             using var tablesReader = new StreamReader(metadata.TablesPath, detectEncodingFromByteOrderMarks: true);
             catalog = LogicalTableCatalog.Parse(tablesReader);
-            logicalTable = MatchLogicalTable(catalog, metadata.DataRoot, outputPath);
+            logicalTableInput = GetLogicalTableInput(metadata.DataRoot, outputPath);
+            logicalTable = FindLogicalTable(catalog, logicalTableInput);
         }
 
         catch (MergeInputException)
@@ -131,7 +139,6 @@ public sealed class LubanMergeCoordinator
         }
 
         ValidateConfiguredLogicalTables(catalog, options);
-        ValidateMode(logicalTable);
         WorkbookSnapshot baseWorkbook;
         WorkbookSnapshot localWorkbook;
         WorkbookSnapshot remoteWorkbook;
@@ -152,6 +159,21 @@ public sealed class LubanMergeCoordinator
         {
             throw new MergeInputException("读取 BASE、LOCAL 或 REMOTE 失败。", exception);
         }
+
+        var logicalTableRegistered = logicalTable is not null;
+        if (logicalTable is null)
+        {
+            if (!options.AllowUnregisteredTable)
+            {
+                throw new UnsafeWorkbookException(
+                    $"__tables__.csv 中没有匹配输入 {logicalTableInput} 的逻辑表。" +
+                    $"请在 input 列登记 {logicalTableInput}；如需按工作簿首字段推断主键，请显式传入 --allow-unregistered-table。");
+            }
+
+            logicalTable = CreateUnregisteredLogicalTable(logicalTableInput);
+            options = options with { ValidateLogicalTableUniqueness = false };
+        }
+        ValidateMode(logicalTable);
 
         var configuredKey = GetConfiguredFields(options.KeyOverrides, logicalTable.FullName);
         var ignoredFields = GetConfiguredFields(options.IgnoredFields, logicalTable.FullName) ?? Array.Empty<string>();
@@ -187,6 +209,8 @@ public sealed class LubanMergeCoordinator
             outputPath,
             ignoredFields,
             options.ValidateLogicalTableUniqueness,
+            logicalTableRegistered,
+            logicalTableInput,
             preparedSheets,
             localWorkbook.Sheets.Sum(sheet => sheet.FormulaCount),
             ParseRecalculationMode(options.RecalculateWithExcel ?? "never"),
@@ -405,21 +429,35 @@ public sealed class LubanMergeCoordinator
         }
     }
 
-    private static LogicalTableDefinition MatchLogicalTable(
+    private static LogicalTableDefinition? FindLogicalTable(
         LogicalTableCatalog catalog,
-        string dataRoot,
-        string outputPath)
+        string relativePath)
     {
-        var relativePath = Path.GetRelativePath(dataRoot, outputPath);
-        if (relativePath.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) || Path.IsPathRooted(relativePath))
-            relativePath = Path.GetFileName(outputPath);
         var matches = catalog.MatchInput(relativePath);
-        if (matches.Count == 0)
-            throw new UnsafeWorkbookException($"__tables__.csv 中没有匹配输入 {relativePath} 的逻辑表。");
         if (matches.Count > 1)
             throw new UnsafeWorkbookException($"输入 {relativePath} 同时匹配多个逻辑表：{string.Join(", ", matches.Select(table => table.FullName))}。");
-        return matches[0];
+        return matches.SingleOrDefault();
     }
+
+    private static string GetLogicalTableInput(string dataRoot, string outputPath)
+    {
+        var relativePath = Path.GetRelativePath(dataRoot, outputPath);
+        if (relativePath.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+            Path.IsPathRooted(relativePath))
+        {
+            relativePath = Path.GetFileName(outputPath);
+        }
+        return NormalizeLogicalInput(relativePath);
+    }
+
+    private static LogicalTableDefinition CreateUnregisteredLogicalTable(string relativePath) => new(
+        $"[未登记] {relativePath}",
+        Path.GetFileNameWithoutExtension(relativePath),
+        true,
+        new[] { relativePath },
+        Array.Empty<RecordKeyDefinition>(),
+        "map",
+        string.Empty);
 
     private static void ValidateConfiguredLogicalTables(
         LogicalTableCatalog catalog,
@@ -1319,6 +1357,15 @@ public sealed class LubanMergeCoordinator
         SetCellEdit setCell when delta != 0 => ShiftSetCell(setCell, firstMovedRow, delta),
         DeleteRowEdit deleteRow when deleteRow.RowNumber >= firstMovedRow => deleteRow with { RowNumber = deleteRow.RowNumber + delta },
         AppendRowEdit appendRow when appendRow.SourceRowNumber is int source && source >= firstMovedRow => appendRow with { SourceRowNumber = source + delta },
+        InsertRowEdit insertRow when delta != 0 => insertRow with
+        {
+            RowNumber = insertRow.RowNumber >= firstMovedRow
+                ? insertRow.RowNumber + delta
+                : insertRow.RowNumber,
+            SourceRowNumber = insertRow.SourceRowNumber is int source && source >= firstMovedRow
+                ? source + delta
+                : insertRow.SourceRowNumber
+        },
         _ => edit
     };
 
@@ -1513,6 +1560,22 @@ public sealed class LubanMergeCoordinator
                     yield return appendRow with { Cells = cells };
                     yield break;
                 }
+            case InsertRowEdit insertRow:
+                {
+                    var cells = new List<CellWrite>();
+                    foreach (var cell in insertRow.Cells)
+                    {
+                        if (!analysisByColumn.TryGetValue(cell.ColumnIndex, out var alignment))
+                        {
+                            cells.Add(cell);
+                            continue;
+                        }
+                        if (finalByIdentity.TryGetValue(alignment.Identity, out var resolvedField))
+                            cells.Add(cell with { ColumnIndex = resolvedField.Field.ColumnIndex });
+                    }
+                    yield return insertRow with { Cells = cells };
+                    yield break;
+                }
             default:
                 yield return edit;
                 yield break;
@@ -1679,6 +1742,8 @@ public sealed class LubanMergeCoordinator
             AddComparisonRow(rows, null, null, remoteRecord, schema, columnCount, dataConflictsByRecord);
         }
 
+        ReorderComparisonDataRows(rows, metadataRowCount, conflicts);
+
         var ignoredColumns = schema.Fields
             .Where(field => ignoredFields.Contains(field.Name))
             .Select(field => field.ColumnIndex)
@@ -1690,6 +1755,63 @@ public sealed class LubanMergeCoordinator
             ignoredColumns,
             schemaMerge.IsIncludedForPreview,
             schemaMerge.MergeStructuralCellForPreview);
+    }
+
+    private static void ReorderComparisonDataRows(
+        List<ComparisonRowPlan> rows,
+        int metadataRowCount,
+        IReadOnlyList<ResolvableMergeConflict> conflicts)
+    {
+        var dataRows = rows.Skip(metadataRowCount).ToArray();
+        var ordered = dataRows
+            .Where(row => row.LocalRowNumber is not null)
+            .OrderBy(row => row.LocalRowNumber)
+            .ToList();
+        InsertBeforeNextLocalAnchor(
+            ordered,
+            dataRows.Where(row => row.LocalRowNumber is null && row.BaseRowNumber is not null),
+            row => row.BaseRowNumber);
+        InsertBeforeNextLocalAnchor(
+            ordered,
+            dataRows.Where(row => row.LocalRowNumber is null && row.BaseRowNumber is null),
+            row => row.RemoteRowNumber);
+
+        rows.RemoveRange(metadataRowCount, rows.Count - metadataRowCount);
+        rows.AddRange(ordered);
+
+        var conflictsById = conflicts.ToDictionary(conflict => conflict.Id, StringComparer.Ordinal);
+        for (var rowIndex = metadataRowCount; rowIndex < rows.Count; rowIndex++)
+        {
+            var row = rows[rowIndex];
+            if (row.RowConflictId is { } rowConflictId)
+            {
+                var conflict = conflictsById[rowConflictId];
+                conflict.SetGridLocation(rowIndex, conflict.GridColumnIndex);
+            }
+            foreach (var cellConflict in row.CellConflictIds)
+                conflictsById[cellConflict.Value].SetGridLocation(rowIndex, cellConflict.Key);
+        }
+    }
+
+    private static void InsertBeforeNextLocalAnchor(
+        List<ComparisonRowPlan> ordered,
+        IEnumerable<ComparisonRowPlan> candidates,
+        Func<ComparisonRowPlan, int?> sourceRowNumber)
+    {
+        foreach (var candidate in candidates.OrderBy(row => sourceRowNumber(row)))
+        {
+            var candidateRowNumber = sourceRowNumber(candidate)!.Value;
+            var nextAnchor = ordered
+                .Where(row => row.LocalRowNumber is not null &&
+                              sourceRowNumber(row) is int anchorRowNumber &&
+                              anchorRowNumber > candidateRowNumber)
+                .OrderBy(row => sourceRowNumber(row))
+                .FirstOrDefault();
+            if (nextAnchor is null)
+                ordered.Add(candidate);
+            else
+                ordered.Insert(ordered.IndexOf(nextAnchor), candidate);
+        }
     }
 
     private static void AddComparisonRow(
@@ -1782,7 +1904,7 @@ public sealed class LubanMergeCoordinator
             {
                 if (localRecord is null && remoteRecord is not null)
                 {
-                    edits.Add(CreateAppendEdit(remoteRecord, localSchema, sheetName));
+                    edits.Add(CreateAddedRowEdit(remoteRecord, remote, local, localSchema, sheetName));
                     addedRecords++;
                 }
                 else if (localRecord is not null && remoteRecord is not null &&
@@ -1822,9 +1944,9 @@ public sealed class LubanMergeCoordinator
                         FormatRecord(baseRecord.Record),
                         "<已删除>",
                         FormatRecord(remoteRecord.Record),
-                        CreateAppendEdit(baseRecord, localSchema, sheetName),
+                        CreateAddedRowEdit(baseRecord, @base, local, localSchema, sheetName),
                         Array.Empty<WorkbookEdit>(),
-                        new WorkbookEdit[] { CreateAppendEdit(remoteRecord, localSchema, sheetName) }));
+                        new[] { CreateAddedRowEdit(remoteRecord, remote, local, localSchema, sheetName) }));
                 }
                 continue;
             }
@@ -2004,15 +2126,32 @@ public sealed class LubanMergeCoordinator
             ? Array.Empty<WorkbookEdit>()
             : new WorkbookEdit[] { new SetCellEdit(sheetName, address, target) };
 
-    private static AppendRowEdit CreateAppendEdit(ParsedRecord source, LubanSchema schema, string sheetName) =>
-        new(sheetName, schema.Fields
+    private static WorkbookEdit CreateAddedRowEdit(
+        ParsedRecord source,
+        ParsedDataset sourceDataset,
+        ParsedDataset local,
+        LubanSchema schema,
+        string sheetName)
+    {
+        var nextLocalAnchor = sourceDataset.Records
+            .Where(candidate => candidate.RowNumber > source.RowNumber)
+            .OrderBy(candidate => candidate.RowNumber)
+            .Select(candidate => local.ByKey.GetValueOrDefault(candidate.Record.Key))
+            .FirstOrDefault(candidate => candidate is not null);
+        var cells = CreateRowCells(source, schema);
+        return nextLocalAnchor is null
+            ? new AppendRowEdit(sheetName, cells, source.RowNumber)
+            : new InsertRowEdit(sheetName, nextLocalAnchor.RowNumber, cells, source.RowNumber);
+    }
+
+    private static IReadOnlyList<CellWrite> CreateRowCells(ParsedRecord source, LubanSchema schema) =>
+        schema.Fields
             .Where(field => source.Record.Fields[field.Name].Kind != CellValueKind.Blank)
             .Select(field => new CellWrite(
                 field.ColumnIndex,
                 source.Record.Fields[field.Name],
                 source.Cells[field.Name]?.StyleIndex))
-            .ToArray(),
-            source.RowNumber);
+            .ToArray();
 
     private static IReadOnlyList<WorkbookEdit> CreateSetRecordEdits(
         ParsedRecord local,

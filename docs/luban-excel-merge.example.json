@@ -6,6 +6,7 @@
   ],
   "keyOverrides": {},
   "ignoredFields": {},
+  "allowUnregisteredTables": false,
   "formulaRecalculation": "auto",
   "validateLogicalTableUniqueness": true,
   "validation": {

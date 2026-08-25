@@ -173,31 +173,47 @@ public sealed class AtomicWorkbookSaver
                 .ToHashSet();
             var metadataReplacement = edits.OfType<ReplaceMetadataRowsEdit>()
                 .FirstOrDefault(edit => edit.SheetName == sourceSheet.Name);
+            var insertedRows = edits
+                .Select((edit, index) => (Edit: edit, Index: index))
+                .Where(item => item.Edit is InsertRowEdit insertRow &&
+                               insertRow.SheetName == sourceSheet.Name)
+                .OrderByDescending(item => ((InsertRowEdit)item.Edit).RowNumber)
+                .ThenByDescending(item => item.Index)
+                .Select(item => (InsertRowEdit)item.Edit)
+                .ToArray();
 
             foreach (var sourceFormula in sourceSheet.Rows.SelectMany(row => row.Cells)
                          .Where(cell => cell.Payload.Kind == Core.CellValueKind.Formula))
             {
-                if (setCells.Contains(sourceFormula.Address) || deletedRows.Contains(sourceFormula.RowNumber))
-                    continue;
-
-                var candidateAddress = sourceFormula.Address;
+                var candidateRowNumber = sourceFormula.RowNumber;
+                var expectedFormula = sourceFormula.Payload.FormulaText ?? string.Empty;
                 if (metadataReplacement is not null)
                 {
                     var firstMovedRow = metadataReplacement.StartRowNumber + metadataReplacement.ExistingRowCount;
                     if (sourceFormula.RowNumber >= firstMovedRow)
                     {
-                        candidateAddress = CellReference.Create(
-                            sourceFormula.RowNumber + metadataReplacement.Rows.Count - metadataReplacement.ExistingRowCount,
-                            sourceFormula.ColumnIndex);
+                        candidateRowNumber += metadataReplacement.Rows.Count - metadataReplacement.ExistingRowCount;
                     }
-                }
-                var candidateFormula = candidateSheet.GetCell(candidateAddress);
-                var expectedFormula = metadataReplacement is null
-                    ? sourceFormula.Payload.FormulaText
-                    : FormulaReferenceShifter.ShiftRows(
-                        sourceFormula.Payload.FormulaText ?? string.Empty,
-                        metadataReplacement.StartRowNumber + metadataReplacement.ExistingRowCount,
+                    expectedFormula = FormulaReferenceShifter.ShiftRows(
+                        expectedFormula,
+                        firstMovedRow,
                         metadataReplacement.Rows.Count - metadataReplacement.ExistingRowCount);
+                }
+                var preInsertAddress = CellReference.Create(candidateRowNumber, sourceFormula.ColumnIndex);
+                if (setCells.Contains(preInsertAddress) || deletedRows.Contains(candidateRowNumber))
+                    continue;
+
+                foreach (var insertedRow in insertedRows)
+                {
+                    if (candidateRowNumber >= insertedRow.RowNumber)
+                        candidateRowNumber++;
+                    expectedFormula = FormulaReferenceShifter.ShiftRows(
+                        expectedFormula,
+                        insertedRow.RowNumber,
+                        1);
+                }
+                var candidateAddress = CellReference.Create(candidateRowNumber, sourceFormula.ColumnIndex);
+                var candidateFormula = candidateSheet.GetCell(candidateAddress);
                 if (candidateFormula?.Payload.Kind != Core.CellValueKind.Formula ||
                     candidateFormula.Payload.FormulaText != expectedFormula ||
                     preserveFormulaCaches && candidateFormula.Payload.CachedValue != sourceFormula.Payload.CachedValue)

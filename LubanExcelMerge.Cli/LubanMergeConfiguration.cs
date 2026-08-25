@@ -12,6 +12,7 @@ public sealed class LubanMergeConfiguration
     public IReadOnlyList<string>? InactivePaths { get; init; }
     public IReadOnlyDictionary<string, string[]>? KeyOverrides { get; init; }
     public IReadOnlyDictionary<string, string[]>? IgnoredFields { get; init; }
+    public bool? AllowUnregisteredTables { get; init; }
     public ValidationConfiguration? Validation { get; init; }
 }
 
@@ -108,6 +109,7 @@ public static class LubanMergeConfigurationLoader
             KeyOverrides = configuration.KeyOverrides,
             IgnoredFields = configuration.IgnoredFields,
             InactivePaths = configuration.InactivePaths,
+            AllowUnregisteredTable = options.AllowUnregisteredTable || configuration.AllowUnregisteredTables == true,
             FullExportValidationEnabled = fullExportEnabled,
             FullExportValidationCommand = fullExportCommand
         };

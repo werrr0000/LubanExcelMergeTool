@@ -11,12 +11,13 @@
 - 上一处/下一处冲突定位及自动合并结果循环定位
 - 单元格、整行和整列批量选择 BASE/LOCAL/REMOTE
 - 多 Sheet 切换与整工作簿保存门禁
-- 新增行、删除行、修改和删除/修改冲突处理
+- 新增行、删除行、修改和删除/修改冲突处理；REMOTE 新增行尽量保留原相对位置
 - LOCAL/REMOTE 任意位置新增 Luban 字段列及字段并集合并
 - 既有字段列删除、重命名、类型修改和位置移动的三方合并与冲突选择
 - 危险列结构变化保存前二次确认
 - Git/Fork resolved 与 staged 集成
 - Git LFS 输入解析
+- 未登记工作簿在 GUI 中通过安全主键推断和保存确认后可继续合并
 - WPS 优先、Microsoft Excel 回退的公式重算
 - 原子保存、重新打开验证、项目校验与诊断包
 - 保存期间显示进度状态并锁定所有退出入口
@@ -49,7 +50,7 @@ dotnet run --project LubanExcelMerge.OpenXml.Tests -c Release
 dotnet run --project LubanExcelMerge.Cli.Tests -c Release
 ```
 
-当前基线为 `115` 项测试。
+当前基线为 `124` 项测试。
 
 ## 发布
 
