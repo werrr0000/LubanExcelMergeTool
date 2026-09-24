@@ -2,7 +2,7 @@
 
 正式发布版本：`Luban Excel Merge 1.2.2`。面向使用者的操作说明参见 [用户手册](LubanExcelMerge-User-Guide.zh-CN.md)。`auto` 重算发生包部件丢失或结构校验失败时，会回退到重算前的完整 MERGED，并以警告状态返回，不会丢失冲突合并结果。
 
-LubanExcelMerge 提供 Git 四文件协议：`BASE`、`LOCAL`、`REMOTE` 和 `MERGED`。Fork 应启动 GUI 可执行文件并等待其退出。
+LubanExcelMerge 提供 Git 四文件协议：`BASE`、`LOCAL`、`REMOTE` 和 `MERGED`。其中 `LOCAL` 是 Git 当前检出分支版本，`REMOTE` 是正在合并的分支版本；这两个名称按 Git 协议定义，不等同于“我提交的文件”和“他人提交的文件”。Fork 应启动 GUI 可执行文件并等待其退出。
 
 ## 生成仓库级配置
 

@@ -6,7 +6,7 @@
 
 ## 功能
 
-- BASE、LOCAL、REMOTE、MERGED 四表同步对比
+- BASE、LOCAL、REMOTE、MERGED 四表同步对比（LOCAL 为 Git 当前分支，REMOTE 为待合并分支）
 - 红色未解决冲突、蓝色已处理修改、绿色新增、黄色删除、橙色待复核元数据高亮
 - 上一处/下一处冲突定位及自动合并结果循环定位
 - 单元格、整行和整列批量选择 BASE/LOCAL/REMOTE
@@ -51,7 +51,7 @@ dotnet run --project LubanExcelMerge.Cli.Tests -c Release
 dotnet run --project LubanExcelMerge.Gui.Tests -c Release
 ```
 
-当前基线为 `125` 项测试。
+当前基线为 `126` 项测试。
 
 ## 发布
 

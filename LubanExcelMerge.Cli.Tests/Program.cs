@@ -90,6 +90,7 @@ try
         ("stager discovers nested ConfigLuban repository", () => GitStagerDiscoversNestedConfigRepository(testRoot)),
         ("real Git LFS mergetool completes four-file protocol", () => GitLfsMergetoolEndToEnd(testRoot)),
         ("non-conflicting four-file merge succeeds", () => NonConflictingMerge(testRoot)),
+        ("LOCAL and REMOTE views follow Git side semantics", () => LocalAndRemoteViewsFollowGitSideSemantics(testRoot)),
         ("REMOTE additions preserve their relative positions", () => RemoteAdditionsPreserveRelativePositions(testRoot)),
         ("GUI infers a safe key for an unregistered workbook", () => GuiInfersUnregisteredWorkbookKey(testRoot)),
         ("headless merge rejects an unregistered workbook by default", () => HeadlessRejectsUnregisteredWorkbook(testRoot)),
@@ -588,6 +589,20 @@ static void NonConflictingMerge(string testRoot)
     True(output.ToString().Contains("写入单元格=1", StringComparison.Ordinal));
     True(output.ToString().Contains("新增记录=1", StringComparison.Ordinal));
     True(output.ToString().Contains("删除记录=1", StringComparison.Ordinal));
+}
+
+static void LocalAndRemoteViewsFollowGitSideSemantics(string testRoot)
+{
+    var scenario = CreateScenario(Path.Combine(testRoot, "side-semantics"));
+    TestWorkbookFactory.Create(scenario.BasePath, new[] { new[] { "1", "BASE_SENTINEL", "base" } });
+    TestWorkbookFactory.Create(scenario.LocalPath, new[] { new[] { "1", "LOCAL_SENTINEL", "local" } });
+    TestWorkbookFactory.Create(scenario.RemotePath, new[] { new[] { "1", "REMOTE_SENTINEL", "remote" } });
+
+    var session = new LubanMergeCoordinator().Prepare(CommandLineParser.Parse(CreateArguments(scenario)));
+    var localRow = session.Comparison.CreateTable(MergeGridSide.Local).Rows.Single(row => row.RecordKey == "1");
+    var remoteRow = session.Comparison.CreateTable(MergeGridSide.Remote).Rows.Single(row => row.RecordKey == "1");
+    Equal("LOCAL_SENTINEL", localRow.Cells[2].DisplayValue);
+    Equal("REMOTE_SENTINEL", remoteRow.Cells[2].DisplayValue);
 }
 
 static void RemoteAdditionsPreserveRelativePositions(string testRoot)
