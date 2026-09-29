@@ -102,7 +102,11 @@ public sealed class OpenXmlWorkbookEditor
         };
     }
 
-    public void MarkForFullCalculation(string workbookPath)
+    public void MarkForFullCalculation(string workbookPath) => SetCalculationFlags(workbookPath, deferred: true);
+
+    public void PrepareForImmediateCalculation(string workbookPath) => SetCalculationFlags(workbookPath, deferred: false);
+
+    private static void SetCalculationFlags(string workbookPath, bool deferred)
     {
         using var stream = new FileStream(workbookPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
         using var archive = new ZipArchive(stream, ZipArchiveMode.Update, leaveOpen: false);
@@ -117,8 +121,8 @@ public sealed class OpenXmlWorkbookEditor
         }
 
         calculation.SetAttributeValue("calcMode", "auto");
-        calculation.SetAttributeValue("fullCalcOnLoad", "1");
-        calculation.SetAttributeValue("forceFullCalc", "1");
+        calculation.SetAttributeValue("fullCalcOnLoad", deferred ? "1" : "0");
+        calculation.SetAttributeValue("forceFullCalc", deferred ? "1" : "0");
         ReplaceXmlEntry(archive, workbookPart, document);
     }
 

@@ -26,6 +26,7 @@ try
         ("no-op save is byte-for-byte identical", () => NoOpSaveIsByteIdentical(sourcePath, testRoot)),
         ("failed save preserves existing output", () => FailedSavePreservesOutput(sourcePath, testRoot)),
         ("never mode preserves cache and marks full calculation", () => NeverModePreservesCache(sourcePath, testRoot)),
+        ("immediate calculation clears deferred flags without changing cells", () => ImmediateCalculationClearsFlags(sourcePath, testRoot)),
         ("auto mode recalculates only affected formulas", () => AutoModeRecalculatesAffectedFormula(sourcePath, testRoot)),
         ("composite recalculator prefers WPS and falls back to Excel", CompositeRecalculatorSelectsProvider),
         ("always mode recalculates even without edits", () => AlwaysModeRecalculatesWithoutEdits(sourcePath, testRoot)),
@@ -33,6 +34,7 @@ try
         ("always mode without Office preserves existing output", () => AlwaysModeWithoutOfficePreservesOutput(sourcePath, testRoot)),
         ("auto mode without Office safely defers recalculation", () => AutoModeWithoutOfficeDefersRecalculation(sourcePath, testRoot)),
         ("auto mode failure safely defers recalculation", () => AutoRecalculationFailureDefers(sourcePath, testRoot)),
+        ("recalculation may omit ZIP directory entries", () => RecalculationMayOmitDirectoryEntries(sourcePath, testRoot)),
         ("auto mode restores package when recalculation drops persons part", () => AutoModeRestoresDroppedPersonsPart(sourcePath, testRoot)),
         ("recalculation failure preserves existing output", () => RecalculationFailurePreservesOutput(sourcePath, testRoot)),
         ("archive safety limits are enforced", () => ArchiveLimitsAreEnforced(sourcePath))
@@ -330,6 +332,36 @@ static void NeverModePreservesCache(string sourcePath, string testRoot)
     Equal("1", (string?)calculation.Attribute("forceFullCalc"));
 }
 
+static void ImmediateCalculationClearsFlags(string sourcePath, string testRoot)
+{
+    var output = Path.Combine(testRoot, "immediate-calculation.xlsx");
+    File.Copy(sourcePath, output);
+    var editor = new OpenXmlWorkbookEditor();
+    editor.MarkForFullCalculation(output);
+    var beforeSheet = HashZipPart(output, "xl/worksheets/sheet1.xml");
+    var beforeStyles = HashZipPart(output, "xl/styles.xml");
+    editor.PrepareForImmediateCalculation(output);
+    using (var archive = ZipFile.OpenRead(output))
+    using (var stream = archive.GetEntry("xl/workbook.xml")!.Open())
+    {
+        var document = XDocument.Load(stream);
+        XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        var flags = document.Root!.Element(ns + "calcPr")!;
+        Equal("auto", (string?)flags.Attribute("calcMode"));
+        Equal("0", (string?)flags.Attribute("fullCalcOnLoad"));
+        Equal("0", (string?)flags.Attribute("forceFullCalc"));
+    }
+    Equal(beforeSheet, HashZipPart(output, "xl/worksheets/sheet1.xml"));
+    Equal(beforeStyles, HashZipPart(output, "xl/styles.xml"));
+    editor.MarkForFullCalculation(output);
+    using var restored = ZipFile.OpenRead(output);
+    using var restoredStream = restored.GetEntry("xl/workbook.xml")!.Open();
+    XNamespace spreadsheet = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    var restoredFlags = XDocument.Load(restoredStream).Root!.Element(spreadsheet + "calcPr")!;
+    Equal("1", (string?)restoredFlags.Attribute("forceFullCalc"));
+    Equal("1", (string?)restoredFlags.Attribute("fullCalcOnLoad"));
+}
+
 static void AutoModeRecalculatesAffectedFormula(string sourcePath, string testRoot)
 {
     var outputPath = Path.Combine(testRoot, "auto-formula.xlsx");
@@ -539,6 +571,29 @@ static string HashZipPart(string path, string partName)
     using var archive = ZipFile.OpenRead(path);
     using var stream = archive.GetEntry(partName)!.Open();
     return Convert.ToHexString(SHA256.HashData(stream));
+}
+
+static void RecalculationMayOmitDirectoryEntries(string sourcePath, string testRoot)
+{
+    var source = Path.Combine(testRoot, "zip-directories-source.xlsx");
+    var output = Path.Combine(testRoot, "zip-directories-output.xlsx");
+    File.Copy(sourcePath, source);
+    using (var archive = ZipFile.Open(source, ZipArchiveMode.Update))
+    {
+        archive.CreateEntry("xl/");
+        archive.CreateEntry("xl/worksheets/");
+        archive.CreateEntry("customXml/");
+    }
+    var recalculator = new FakeWorkbookRecalculator(true, path =>
+    {
+        using var archive = ZipFile.Open(path, ZipArchiveMode.Update);
+        foreach (var entry in archive.Entries.Where(entry => entry.FullName.EndsWith("/", StringComparison.Ordinal)).ToArray())
+            entry.Delete();
+    });
+    var result = new AtomicWorkbookSaver(recalculator: recalculator).Save(source, output,
+        Array.Empty<WorkbookEdit>(), new WorkbookSaveOptions(WorkbookRecalculationMode.Always));
+    Equal(WorkbookRecalculationStatus.Completed, result.RecalculationStatus);
+    Equal(HashZipPart(source, "customXml/item1.xml"), HashZipPart(output, "customXml/item1.xml"));
 }
 
 static void AutoModeRestoresDroppedPersonsPart(string sourcePath, string testRoot)

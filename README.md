@@ -2,7 +2,7 @@
 
 面向 Git 和 Fork 的 Luban `.xlsx` 三方冲突合并工具。程序读取 BASE、LOCAL、REMOTE，在桌面界面中展示差异和冲突，并将用户确认后的结果原子保存到 MERGED。
 
-当前版本：`1.2.2.1`（本地样式修复版）
+当前版本：`1.2.2.2`（本地样式与保存性能修复版）
 
 ## 功能
 
@@ -51,7 +51,7 @@ dotnet run --project LubanExcelMerge.Cli.Tests -c Release
 dotnet run --project LubanExcelMerge.Gui.Tests -c Release
 ```
 
-当前基线为 `143` 项测试。样式修复说明见 [本地修复记录](docs/Style-Fix-1.2.2.1.zh-CN.md)。
+当前基线为 `145` 项测试。样式修复说明见 [本地修复记录](docs/Style-Fix-1.2.2.1.zh-CN.md)。
 
 ## 发布
 

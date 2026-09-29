@@ -44,6 +44,9 @@ public sealed class ExcelComWorkbookRecalculator : IWorkbookRecalculator
 
         var applicationType = ResolveApplicationType()
             ?? throw new InvalidOperationException($"本机未安装或未正确注册 {ProviderName} 自动化接口。");
+        // 延迟重算标记会让 Excel 在 CalculateFullRebuild 后仍返回 xlPending。
+        // 本次显式执行完整重算；失败时保存器会恢复带原标记的候选文件。
+        new OpenXmlWorkbookEditor().PrepareForImmediateCalculation(workbookPath);
         var existingProcessIds = GetProcessIds(_processNames);
         using var completed = new ManualResetEventSlim();
         Exception? failure = null;
