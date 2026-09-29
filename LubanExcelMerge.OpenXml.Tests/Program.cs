@@ -38,6 +38,8 @@ try
         ("archive safety limits are enforced", () => ArchiveLimitsAreEnforced(sourcePath))
     };
 
+    tests.AddRange(StyleRegressionTests.Create(sourcePath, testRoot));
+
     if (args is ["--real", var accountPath, var battlePath, var formulaPath])
         tests.Add(("real project workbook smoke test", () => RealWorkbookSmokeTest(accountPath, battlePath, formulaPath, testRoot)));
 

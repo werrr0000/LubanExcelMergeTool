@@ -31,6 +31,7 @@ public sealed class OpenXmlWorkbookReader
                 element => ResolvePartPath("xl/workbook.xml", (string)element.Attribute("Target")!),
                 StringComparer.Ordinal);
         var sharedStrings = ReadSharedStrings(archive);
+        var styleValidator = new OpenXmlStyleValidator(archive, path);
         var sheets = new List<SheetSnapshot>();
 
         foreach (var sheetElement in workbook.Root!
@@ -42,7 +43,7 @@ public sealed class OpenXmlWorkbookReader
             if (!relationshipTargets.TryGetValue(relationshipId, out var partPath))
                 throw new InvalidDataException($"工作表 {name} 的关系 {relationshipId} 无法解析。");
 
-            sheets.Add(ReadSheet(archive, path, name, partPath, sharedStrings));
+            sheets.Add(ReadSheet(archive, path, name, partPath, sharedStrings, styleValidator));
         }
 
         return new WorkbookSnapshot(
@@ -99,9 +100,11 @@ public sealed class OpenXmlWorkbookReader
         string workbookPath,
         string sheetName,
         string partPath,
-        IReadOnlyList<string> sharedStrings)
+        IReadOnlyList<string> sharedStrings,
+        OpenXmlStyleValidator styleValidator)
     {
         var document = LoadXml(archive, partPath);
+        styleValidator.ValidateSheet(document, sheetName);
         var rows = new List<OpenXmlRowSnapshot>();
         var sheetData = document.Root?.Element(OpenXmlNamespaces.Spreadsheet + "sheetData")
             ?? throw new InvalidDataException($"工作表 {sheetName} 缺少 sheetData。");

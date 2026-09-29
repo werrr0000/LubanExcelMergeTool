@@ -1645,13 +1645,32 @@ static void AddSerializedBlankCell(
     string path,
     string sheetName,
     string address,
-    string? styleIndex = null) =>
-    new OpenXmlWorkbookEditor().Apply(
-        path,
-        new WorkbookEdit[]
+    string? styleIndex = null)
+{
+    // 空白布局样本也必须提供它引用的样式定义。
+    using (var archive = ZipFile.Open(path, ZipArchiveMode.Update))
+    {
+        if (archive.GetEntry("xl/styles.xml") is null)
         {
-            new SetCellEdit(sheetName, address, Core.CellPayload.Blank, styleIndex)
-        });
+            using (var writer = new StreamWriter(archive.CreateEntry("xl/styles.xml").Open()))
+                writer.Write("<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><cellXfs count=\"2\"><xf/><xf applyAlignment=\"1\"><alignment horizontal=\"left\"/></xf></cellXfs></styleSheet>");
+            foreach (var part in new[] { "xl/_rels/workbook.xml.rels", "[Content_Types].xml" })
+            {
+                XDocument document;
+                using (var stream = archive.GetEntry(part)!.Open()) document = XDocument.Load(stream);
+                var ns = document.Root!.Name.Namespace;
+                document.Root.Add(part.StartsWith("xl/")
+                    ? new XElement(ns + "Relationship", new XAttribute("Id", "rIdStyles"), new XAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"), new XAttribute("Target", "styles.xml"))
+                    : new XElement(ns + "Override", new XAttribute("PartName", "/xl/styles.xml"), new XAttribute("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml")));
+                archive.GetEntry(part)!.Delete();
+                using var output = archive.CreateEntry(part).Open();
+                document.Save(output);
+            }
+        }
+    }
+    new OpenXmlWorkbookEditor().Apply(path,
+        new WorkbookEdit[] { new SetCellEdit(sheetName, address, Core.CellPayload.Blank, styleIndex) });
+}
 
 static void SetWorkbookFormula(
     string path,

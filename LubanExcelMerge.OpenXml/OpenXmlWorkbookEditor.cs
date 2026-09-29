@@ -15,6 +15,7 @@ public sealed class OpenXmlWorkbookEditor
         using var archive = new ZipArchive(stream, ZipArchiveMode.Update, leaveOpen: false);
         var sheetParts = ReadSheetParts(archive);
         var touchedParts = new HashSet<string>(StringComparer.Ordinal);
+        var styleImporter = new OpenXmlStyleImporter(archive);
 
         foreach (var editGroup in edits.GroupBy(edit => edit.SheetName, StringComparer.Ordinal))
         {
@@ -27,7 +28,7 @@ public sealed class OpenXmlWorkbookEditor
             var cleanedEmptyFormatting = false;
 
             var indexedEdits = editGroup
-                .Select((edit, index) => (Edit: edit, Index: index))
+                .Select((edit, index) => (Edit: ImportStyles(edit, styleImporter), Index: index))
                 .ToArray();
             foreach (var (edit, _) in indexedEdits.Where(item => item.Edit is not InsertRowEdit))
             {
@@ -71,7 +72,34 @@ public sealed class OpenXmlWorkbookEditor
             touchedParts.Add(partPath);
         }
 
+        if (styleImporter.IsModified)
+        {
+            ReplaceXmlEntry(archive, "xl/styles.xml", styleImporter.TargetDocument);
+            touchedParts.Add("xl/styles.xml");
+        }
         return new WorkbookEditResult(touchedParts);
+    }
+
+    private static WorkbookEdit ImportStyles(WorkbookEdit edit, OpenXmlStyleImporter importer)
+    {
+        CellWrite MapCell(CellWrite cell) => cell with
+        {
+            StyleIndex = importer.Resolve(cell.StyleIndex, cell.Payload.SourceWorkbook)
+        };
+        return edit switch
+        {
+            SetCellEdit cell => cell with
+            {
+                StyleIndex = importer.Resolve(cell.StyleIndex, cell.StyleSourceWorkbook ?? cell.Payload.SourceWorkbook)
+            },
+            AppendRowEdit row => row with { Cells = row.Cells.Select(MapCell).ToArray() },
+            InsertRowEdit row => row with { Cells = row.Cells.Select(MapCell).ToArray() },
+            ReplaceMetadataRowsEdit metadata => metadata with
+            {
+                Rows = metadata.Rows.Select(row => new RowWrite(row.Cells.Select(MapCell).ToArray())).ToArray()
+            },
+            _ => edit
+        };
     }
 
     public void MarkForFullCalculation(string workbookPath)
