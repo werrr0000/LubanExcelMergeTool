@@ -252,6 +252,7 @@ public sealed class AtomicWorkbookSaver
 
         var allowedDerivedPart = "xl/calcChain.xml";
         var missingParts = beforeRecalculation.PackagePartNames
+            .Where(part => !part.EndsWith("/", StringComparison.Ordinal))
             .Except(new[] { allowedDerivedPart }, StringComparer.OrdinalIgnoreCase)
             .Except(afterRecalculation.PackagePartNames, StringComparer.OrdinalIgnoreCase)
             .ToArray();

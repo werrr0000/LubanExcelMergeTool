@@ -8,7 +8,10 @@ public sealed record SetCellEdit(
     string SheetName,
     string Address,
     CellPayload Payload,
-    string? StyleIndex = null) : WorkbookEdit(SheetName);
+    string? StyleIndex = null) : WorkbookEdit(SheetName)
+{
+    public string? StyleSourceWorkbook { get; init; }
+}
 
 public sealed record DeleteRowEdit(string SheetName, int RowNumber) : WorkbookEdit(SheetName);
 

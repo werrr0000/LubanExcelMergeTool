@@ -1152,7 +1152,7 @@ public sealed class LubanMergeCoordinator
                         .Select((payload, column) => new CellWrite(
                             column,
                             payload,
-                            row!.GetCell(column)?.StyleIndex))
+                            payload.Address is null ? null : sourceSheet.GetCell(payload.Address)?.StyleIndex))
                         .Where(cell => cell.Payload.Kind != CellValueKind.Blank)
                         .ToArray()))
                 .ToArray());
@@ -1462,12 +1462,14 @@ public sealed class LubanMergeCoordinator
                     ? GetStructuralSourceCell(localRow.RowNumber, resolvedField, sheets, schemaMerge)
                     : null;
                 var desiredPayload = desired?.Payload ?? CellPayload.Blank;
-                var desiredStyle = desired?.StyleIndex ?? actual?.StyleIndex;
+                var styleSource = desired?.StyleIndex is not null ? desired : actual;
+                var desiredStyle = styleSource?.StyleIndex;
                 if (actual is null && desiredPayload.Kind == CellValueKind.Blank && desiredStyle is null)
                     continue;
                 if (actual is not null &&
                     actual.Payload.ContentEquals(desiredPayload) &&
-                    string.Equals(actual.StyleIndex, desiredStyle, StringComparison.Ordinal))
+                    string.Equals(actual.StyleIndex, desiredStyle, StringComparison.Ordinal) &&
+                    string.Equals(actual.Payload.SourceWorkbook, styleSource?.Payload.SourceWorkbook, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -1475,7 +1477,7 @@ public sealed class LubanMergeCoordinator
                     sheets.Local.Name,
                     CellReference.Create(localRow.RowNumber, columnIndex),
                     desiredPayload,
-                    desiredStyle));
+                    desiredStyle) { StyleSourceWorkbook = styleSource?.Payload.SourceWorkbook });
             }
         }
         return edits;
