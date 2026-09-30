@@ -1,0 +1,31 @@
+#!/bin/bash
+set -euo pipefail
+# Dock 启动的 Fork 可能没有 shell 的 PATH；优先保留调用方环境，补齐常见 Git/LFS 路径。
+export PATH="${PATH:-/usr/bin:/bin}:/opt/homebrew/bin:/usr/local/bin:/Applications/Fork.app/Contents/Resources/git-instance/bin:/Applications/Fork.app/Contents/Resources/git-instance/git-lfs"
+bin_dir="$(cd "$(dirname "$0")" && pwd)"
+# 支持 Fork 的四个位置参数；仓库从 MERGED 所在目录解析，兼容 worktree 和嵌套仓库。
+if [ "$#" -eq 4 ] && [[ "$1" != --* ]] && [ "$1" != merge ]; then
+    first_name="$(basename "$1")"
+    second_name="$(basename "$2")"
+    third_name="$(basename "$3")"
+    # 用户配置可能采用 LOCAL、REMOTE、BASE、MERGED。按临时文件名识别，
+    # 这样可兼容 Fork 的顺序和标准 git mergetool 的 BASE、LOCAL、REMOTE 顺序。
+    if [[ "$first_name" == *.~LOCAL.* && "$second_name" == *.~REMOTE.* && "$third_name" == *.~BASE.* ]]; then
+        local_file="$1"; remote_file="$2"; base_file="$3"
+    else
+        base_file="$1"; local_file="$2"; remote_file="$3"
+    fi
+    merged_file="$4"
+    repo_root="$(git -C "$(dirname "$merged_file")" rev-parse --show-toplevel)" || exit 2
+    diagnostic_log="${TMPDIR:-/tmp}/luban-excel-merge-$(basename "$merged_file").jsonl"
+    set +e
+    "$bin_dir/LubanExcelMerge.Desktop" --base "$base_file" --local "$local_file" \
+        --remote "$remote_file" --output "$merged_file" --repo-root "$repo_root" \
+        --log "$diagnostic_log"
+    exit_code=$?
+    printf '%s exit=%s base=%s local=%s remote=%s merged=%s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "$exit_code" "$base_file" "$local_file" "$remote_file" "$merged_file" \
+        >> "${TMPDIR:-/tmp}/luban-excel-merge-launcher.log"
+    exit "$exit_code"
+fi
+exec "$bin_dir/LubanExcelMerge.Desktop" "$@"

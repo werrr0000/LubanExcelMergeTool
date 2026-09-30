@@ -32,7 +32,19 @@
 - `LubanExcelMerge.Gui`：Windows WPF 用户界面
 - `*.Tests`：无外部测试框架依赖的回归测试程序
 
-## 构建
+## macOS 最小版本
+
+新增 Avalonia 桌面入口，复用原合并引擎，支持 Mac Fork 四文件调用、逐项冲突选择、四表预览、保存验证与暂存。
+
+```bash
+./scripts/publish-macos.sh osx-arm64
+./scripts/install-macos.sh
+```
+
+Fork 自定义工具使用安装脚本输出的路径，参数为 `"$LOCAL" "$REMOTE" "$BASE" "$MERGED"`。
+功能范围、公式限制及验证记录见 [macOS / Fork 最小链路](docs/macOS-Minimal-Chain.zh-CN.md)。
+
+## Windows 原版构建
 
 需要 Windows 和 .NET 8 SDK。
 
