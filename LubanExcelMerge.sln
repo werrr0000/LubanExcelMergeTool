@@ -25,6 +25,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LubanExcelMerge.Cli.Tests",
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LubanExcelMerge.Gui.Tests", "LubanExcelMerge.Gui.Tests\LubanExcelMerge.Gui.Tests.csproj", "{9AD0354D-84D6-465D-82AA-96CECC2A0CC1}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LubanExcelMerge.Desktop", "LubanExcelMerge.Desktop\LubanExcelMerge.Desktop.csproj", "{78B5FE4D-4BD5-4532-B4BA-CC1AB6D14A65}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LubanExcelMerge.Desktop.Tests", "LubanExcelMerge.Desktop.Tests\LubanExcelMerge.Desktop.Tests.csproj", "{0204951C-47E1-42D5-AF0E-78CED7DE2913}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -78,5 +82,13 @@ Global
 		{9AD0354D-84D6-465D-82AA-96CECC2A0CC1}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{9AD0354D-84D6-465D-82AA-96CECC2A0CC1}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{9AD0354D-84D6-465D-82AA-96CECC2A0CC1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{78B5FE4D-4BD5-4532-B4BA-CC1AB6D14A65}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{78B5FE4D-4BD5-4532-B4BA-CC1AB6D14A65}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{78B5FE4D-4BD5-4532-B4BA-CC1AB6D14A65}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{78B5FE4D-4BD5-4532-B4BA-CC1AB6D14A65}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0204951C-47E1-42D5-AF0E-78CED7DE2913}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0204951C-47E1-42D5-AF0E-78CED7DE2913}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0204951C-47E1-42D5-AF0E-78CED7DE2913}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0204951C-47E1-42D5-AF0E-78CED7DE2913}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

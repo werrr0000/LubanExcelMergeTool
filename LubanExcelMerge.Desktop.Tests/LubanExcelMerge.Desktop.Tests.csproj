@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Headless" Version="11.3.22" />
+    <ProjectReference Include="../LubanExcelMerge.Desktop/LubanExcelMerge.Desktop.csproj" />
+    <None Include="../scripts/luban-excel-merge" Link="luban-excel-merge" CopyToOutputDirectory="PreserveNewest" />
+    <Compile Include="../LubanExcelMerge.Cli.Tests/TestWorkbookFactory.cs" Link="TestWorkbookFactory.cs" />
+  </ItemGroup>
+</Project>
