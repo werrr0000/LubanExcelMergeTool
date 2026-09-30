@@ -25,9 +25,12 @@ public sealed class ProjectValidationRunner : IProjectValidator
             throw new ArgumentOutOfRangeException(nameof(timeout));
 
         var isBatch = Path.GetExtension(commandPath) is ".bat" or ".cmd";
+        if (isBatch && !OperatingSystem.IsWindows())
+            throw new ProjectValidationException("macOS/Linux 不能执行 Windows 批处理，请配置 .sh 校验脚本。");
+        var isShell = !OperatingSystem.IsWindows() && Path.GetExtension(commandPath) == ".sh";
         var startInfo = new ProcessStartInfo
         {
-            FileName = isBatch ? Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe" : commandPath,
+            FileName = isBatch ? Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe" : isShell ? "/bin/bash" : commandPath,
             Arguments = isBatch ? $"/d /s /c \"\"{commandPath}\"\"" : string.Empty,
             WorkingDirectory = Path.GetDirectoryName(commandPath) ?? repositoryRoot,
             UseShellExecute = false,
@@ -38,6 +41,9 @@ public sealed class ProjectValidationRunner : IProjectValidator
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
+
+        if (isShell)
+            startInfo.ArgumentList.Add(Path.GetFullPath(commandPath));
 
         using var process = new Process { StartInfo = startInfo };
         try
@@ -73,7 +79,7 @@ public sealed class ProjectValidationRunner : IProjectValidator
         {
             throw;
         }
-        catch (Exception exception) when (exception is IOException or InvalidOperationException)
+        catch (Exception exception) when (exception is IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             throw new ProjectValidationException($"运行{_displayName}失败。", exception);
         }

@@ -24,7 +24,9 @@ internal static class GitConfigCommand
         output.WriteLine();
         output.WriteLine(configuration.BuildIniSnippet());
         output.WriteLine();
-        output.WriteLine("确认后可在 PowerShell 中执行以下仓库级命令：");
+        output.WriteLine(OperatingSystem.IsWindows()
+            ? "确认后可在 PowerShell 中执行以下仓库级命令："
+            : "确认后可在终端中执行以下仓库级命令：");
         foreach (var command in configuration.BuildLocalConfigurationCommands())
             output.WriteLine(command);
         return ExitCodes.Success;

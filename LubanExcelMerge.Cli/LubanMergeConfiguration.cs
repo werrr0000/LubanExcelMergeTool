@@ -20,6 +20,8 @@ public sealed class ValidationConfiguration
 {
     public bool Enabled { get; init; }
     public string? WindowsCommand { get; init; }
+    public string? UnixCommand { get; init; }
+    public string? UnixFullExportCommand { get; init; }
     public bool FullExportEnabled { get; init; }
     public string? FullExportCommand { get; init; }
 }
@@ -35,14 +37,14 @@ public static class LubanMergeConfigurationLoader
             var defaultValidationEnabled = options.Validate || options.ProjectValidationEnabled;
             var defaultValidationCommand = options.ProjectValidationCommand;
             defaultValidationCommand ??= defaultValidationEnabled
-                ? Path.Combine(defaultRepositoryRoot, "ConfigLuban", "check.bat")
+                ? Path.Combine(defaultRepositoryRoot, "ConfigLuban", OperatingSystem.IsWindows() ? "check.bat" : "check.sh")
                 : null;
             if (defaultValidationEnabled && !File.Exists(defaultValidationCommand))
                 throw new MergeInputException($"项目快速校验命令不存在：{defaultValidationCommand}。");
             var defaultFullExportEnabled = options.FullExportValidationEnabled;
             var defaultFullExportCommand = options.FullExportValidationCommand;
             defaultFullExportCommand ??= defaultFullExportEnabled
-                ? Path.Combine(defaultRepositoryRoot, "ConfigLuban", "gen-pipeline.bat")
+                ? Path.Combine(defaultRepositoryRoot, "ConfigLuban", OperatingSystem.IsWindows() ? "gen-pipeline.bat" : "gen-pipeline.sh")
                 : null;
             if (defaultFullExportEnabled && !File.Exists(defaultFullExportCommand))
                 throw new MergeInputException($"完整导出校验命令不存在：{defaultFullExportCommand}。");
@@ -79,20 +81,24 @@ public static class LubanMergeConfigurationLoader
 
         Validate(configuration, configPath);
         var repositoryRoot = Path.GetFullPath(options.RepositoryRoot);
-        var validationCommand = ResolveOptionalPath(repositoryRoot, configuration.Validation?.WindowsCommand);
+        var validationCommand = ResolveOptionalPath(repositoryRoot, OperatingSystem.IsWindows()
+            ? configuration.Validation?.WindowsCommand
+            : configuration.Validation?.UnixCommand);
         var validationEnabled = options.Validate || configuration.Validation?.Enabled == true;
         validationCommand ??= validationEnabled
-            ? Path.Combine(repositoryRoot, "ConfigLuban", "check.bat")
+            ? Path.Combine(repositoryRoot, "ConfigLuban", OperatingSystem.IsWindows() ? "check.bat" : "check.sh")
             : null;
         if (validationEnabled && !File.Exists(validationCommand))
             throw new MergeInputException(
-                $"配置文件 {configPath} 的 $.validation.windowsCommand 不存在：{validationCommand}。");
+                $"配置文件 {configPath} 的项目快速校验命令不存在：{validationCommand}。");
         var fullExportEnabled = options.FullExportValidationEnabled ||
                                 configuration.Validation?.FullExportEnabled == true;
         var fullExportCommand = options.FullExportValidationCommand ??
-                                ResolveOptionalPath(repositoryRoot, configuration.Validation?.FullExportCommand);
+                                ResolveOptionalPath(repositoryRoot, OperatingSystem.IsWindows()
+                                    ? configuration.Validation?.FullExportCommand
+                                    : configuration.Validation?.UnixFullExportCommand ?? configuration.Validation?.FullExportCommand);
         fullExportCommand ??= fullExportEnabled
-            ? Path.Combine(repositoryRoot, "ConfigLuban", "gen-pipeline.bat")
+            ? Path.Combine(repositoryRoot, "ConfigLuban", OperatingSystem.IsWindows() ? "gen-pipeline.bat" : "gen-pipeline.sh")
             : null;
         if (fullExportEnabled && !File.Exists(fullExportCommand))
             throw new MergeInputException(

@@ -198,6 +198,8 @@ public sealed class MergeDiagnosticLogger
             exceptionType = exception.GetType().FullName,
             innerExceptionType = exception.InnerException?.GetType().FullName,
             exceptionTypes = EnumerateExceptionChain(exception).Select(item => item.GetType().FullName),
+            missingFiles = EnumerateExceptionChain(exception).OfType<FileNotFoundException>()
+                .Select(item => item.FileName).ToArray(),
             stackTrace = exception.StackTrace
         });
     }

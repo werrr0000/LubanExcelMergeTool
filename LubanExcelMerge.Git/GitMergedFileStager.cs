@@ -21,8 +21,8 @@ public sealed class GitMergedFileStager
 
     public GitStageResult Stage(string repositoryRoot, string mergedPath)
     {
-        var requestedRoot = Path.GetFullPath(repositoryRoot);
-        var absoluteMerged = Path.GetFullPath(mergedPath);
+        var requestedRoot = GitPath.GetPhysicalPath(repositoryRoot);
+        var absoluteMerged = GitPath.GetPhysicalPath(mergedPath);
         if (!File.Exists(absoluteMerged))
             throw new GitStagingException($"MERGED 文件不存在，无法加入 Git staged：{absoluteMerged}。");
         if (!IsWithinRoot(requestedRoot, absoluteMerged))
@@ -33,7 +33,7 @@ public sealed class GitMergedFileStager
         var topLevel = RunGit(mergedDirectory, "rev-parse", "--show-toplevel").Output.Trim();
         if (string.IsNullOrWhiteSpace(topLevel))
             throw new GitStagingException($"无法从 MERGED 路径确定 Git 仓库根目录：{absoluteMerged}。");
-        var absoluteRoot = Path.GetFullPath(topLevel);
+        var absoluteRoot = GitPath.GetPhysicalPath(topLevel);
         if (!IsWithinRoot(requestedRoot, absoluteRoot) || !IsWithinRoot(absoluteRoot, absoluteMerged))
             throw new GitStagingException("MERGED 所属 Git 仓库超出指定项目根目录，已拒绝自动暂存。");
         var relativePath = Path.GetRelativePath(absoluteRoot, absoluteMerged);

@@ -152,9 +152,12 @@ public sealed class PreparedSheetMerge
         AutomaticEdits.Concat(Conflicts.SelectMany(conflict => conflict.GetSelectedEdits()));
 }
 
-public sealed class PreparedMergeSession
+public sealed class PreparedMergeSession : IDisposable
 {
     private readonly AtomicWorkbookSaver _saver;
+    private string? _ownedSourceDirectory;
+    private string? _ownedLocalPath;
+    private bool _disposed;
     private readonly int _localFormulaCount;
     private readonly WorkbookRecalculationMode _recalculationMode;
     private readonly string _repositoryRoot;
@@ -244,8 +247,40 @@ public sealed class PreparedMergeSession
     public int RemainingConflicts => Conflicts.Count(conflict => !conflict.IsResolved);
     public bool CanSave => RemainingConflicts == 0;
 
+    /// <summary>交互会话持有自己的保存模板，避免调用方清理或修改临时 LOCAL 后无法保存。</summary>
+    public void RetainSaveSource()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_ownedLocalPath is not null) return;
+        var directory = Directory.CreateTempSubdirectory("LubanExcelMerge-session-").FullName;
+        try
+        {
+            var target = Path.Combine(directory, "LOCAL.xlsx");
+            File.Copy(LocalPath, target);
+            _ownedSourceDirectory = directory;
+            _ownedLocalPath = target;
+        }
+        catch
+        {
+            Directory.Delete(directory, recursive: true);
+            throw;
+        }
+    }
+
+    /// <summary>释放交互会话保存模板，不删除调用方输入或 MERGED。</summary>
+    public void Dispose()
+    {
+        _disposed = true;
+        if (_ownedSourceDirectory is null) return;
+        try { Directory.Delete(_ownedSourceDirectory, recursive: true); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        _ownedSourceDirectory = null;
+    }
+
     public WorkbookSaveResult Save()
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         if (!CanSave)
             throw new InvalidOperationException($"仍有 {RemainingConflicts} 个冲突未解决，不能保存。");
 
@@ -334,7 +369,7 @@ public sealed class PreparedMergeSession
         IReadOnlyList<WorkbookEdit> edits,
         bool formulaMayBeAffected) =>
         _saver.Save(
-            LocalPath,
+            _ownedLocalPath ?? LocalPath,
             OutputPath,
             edits,
             new WorkbookSaveOptions(_recalculationMode, formulaMayBeAffected));

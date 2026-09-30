@@ -15,7 +15,6 @@ public sealed record RecalculationModeOption(string Value, string DisplayName);
 public sealed class MainWindowViewModel : INotifyPropertyChanged
 {
     private readonly LubanMergeCoordinator _coordinator = new();
-    private readonly GitMergedFileStager _gitStager = new();
     private readonly Stack<ResolutionBatch> _undo = new();
     private readonly Stack<ResolutionBatch> _redo = new();
     private readonly HashSet<string> _selectedConflictIds = new(StringComparer.Ordinal);
@@ -309,21 +308,10 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         var externalMergeCompleted = false;
         try
         {
-            var result = await Task.Run(_session.Save);
-            GitStageResult? gitStageResult = null;
-            if (IsExternalMergeInvocation)
-            {
-                try
-                {
-                    gitStageResult = await Task.Run(() => _gitStager.Stage(RepositoryRoot, result.OutputPath));
-                }
-                catch (GitStagingException exception)
-                {
-                    throw new WorkbookWriteException(
-                        "MERGED 已保存，但无法在 Git 中标记 resolved 并加入 staged。请保留当前文件并检查 Git/Fork 配置。",
-                        exception);
-                }
-            }
+            var completion = await Task.Run(() =>
+                MergeCompletion.Save(_session, RepositoryRoot, IsExternalMergeInvocation));
+            var result = completion.SaveResult;
+            var gitStageResult = completion.StageResult;
             _diagnosticLogger?.WriteSaved(_session, result, gitStageResult is not null);
             var validationText = result.ProjectValidationCompleted ? "，项目快速校验通过" : string.Empty;
             if (result.FullExportValidationCompleted)

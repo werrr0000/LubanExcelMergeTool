@@ -26,9 +26,9 @@ public sealed record GitMergeToolConfiguration(
 
     public IReadOnlyList<string> BuildLocalConfigurationCommands() =>
     [
-        $"git -C {PowerShellQuote(Path.GetFullPath(RepositoryRoot))} config --local merge.tool {PowerShellQuote(ToolName)}",
-        $"git -C {PowerShellQuote(Path.GetFullPath(RepositoryRoot))} config --local mergetool.{ToolName}.cmd {PowerShellQuote(Command)}",
-        $"git -C {PowerShellQuote(Path.GetFullPath(RepositoryRoot))} config --local mergetool.{ToolName}.trustExitCode true"
+        $"git -C {ConfigurationQuote(Path.GetFullPath(RepositoryRoot))} config --local merge.tool {ConfigurationQuote(ToolName)}",
+        $"git -C {ConfigurationQuote(Path.GetFullPath(RepositoryRoot))} config --local mergetool.{ToolName}.cmd {ConfigurationQuote(Command)}",
+        $"git -C {ConfigurationQuote(Path.GetFullPath(RepositoryRoot))} config --local mergetool.{ToolName}.trustExitCode true"
     ];
 
     public void Validate()
@@ -46,6 +46,9 @@ public sealed record GitMergeToolConfiguration(
     private static string NormalizePath(string path) => Path.GetFullPath(path).Replace('\\', '/');
 
     private static string ShellQuote(string value) => "'" + value.Replace("'", "'\"'\"'", StringComparison.Ordinal) + "'";
+
+    private static string ConfigurationQuote(string value) =>
+        OperatingSystem.IsWindows() ? PowerShellQuote(value) : ShellQuote(value);
 
     private static string PowerShellQuote(string value) =>
         "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
