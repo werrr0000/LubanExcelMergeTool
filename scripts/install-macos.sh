@@ -12,4 +12,4 @@ fi
 ditto "$source_app" "$destination_dir/LubanExcelMerge.app"
 codesign --verify --deep --strict "$destination_dir/LubanExcelMerge.app"
 echo "Fork 自定义工具路径：$destination_dir/LubanExcelMerge.app/Contents/MacOS/luban-excel-merge"
-echo 'Fork 参数："$BASE" "$LOCAL" "$REMOTE" "$MERGED"'
+echo 'Fork 参数："$LOCAL" "$REMOTE" "$BASE" "$MERGED"'

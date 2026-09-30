@@ -4,6 +4,7 @@ using Avalonia.Controls.Templates;
 using Avalonia.Data;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Input;
 using LubanExcelMerge.Cli;
 using LubanExcelMerge.OpenXml;
 
@@ -15,6 +16,8 @@ public sealed class MergeWindow : Window
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _detail = new() { TextWrapping = TextWrapping.Wrap };
     private readonly ComboBox _sheets = new() { MinWidth = 200 };
+    private readonly ComboBox _filter = new() { MinWidth = 120 };
+    private readonly TextBox _search = new() { Watermark = "搜索冲突…", MinWidth = 180 };
     private readonly ListBox _conflicts = new() { MinHeight = 80 };
     private readonly CheckBox _reviewed = new() { Name = "Reviewed", Content = "我已复核自动合并结果、结构变化和主键推断提示" };
     private readonly Button _save = new() { Content = "保存并标记已解决", Name = "SaveMerge" };
@@ -25,6 +28,9 @@ public sealed class MergeWindow : Window
     private PreparedMergeSession? _session;
     private bool _loaded;
     private MergeDiagnosticLogger? _diagnosticLogger;
+    private readonly Stack<IReadOnlyDictionary<string, MergeChoice?>> _undo = new();
+    private readonly Stack<IReadOnlyDictionary<string, MergeChoice?>> _redo = new();
+    private bool _restoringSnapshot;
 
     public MergeWindow(string[] args)
     {
@@ -39,6 +45,17 @@ public sealed class MergeWindow : Window
         var top = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
         top.Children.Add(new TextBlock { Text = "Excel 三方合并", FontSize = 22, FontWeight = FontWeight.Bold });
         top.Children.Add(_sheets);
+        top.Children.Add(new TextBlock { Text = "筛选", VerticalAlignment = VerticalAlignment.Center });
+        _filter.ItemsSource = new[] { "全部", "未解决", "已解决" };
+        _filter.SelectedIndex = 0;
+        top.Children.Add(_filter);
+        top.Children.Add(_search);
+        var previous = new Button { Content = "上一处", Name = "PreviousConflict" };
+        var next = new Button { Content = "下一处", Name = "NextConflict" };
+        previous.Click += (_, _) => NavigateConflict(-1);
+        next.Click += (_, _) => NavigateConflict(1);
+        top.Children.Add(previous);
+        top.Children.Add(next);
         Add(root, top, 0);
         _status.Margin = new Thickness(0, 12);
         Add(root, _status, 1);
@@ -58,10 +75,23 @@ public sealed class MergeWindow : Window
         clear.Click += (_, _) =>
         {
             if (SelectedConflict is not { } item || IsBusy) return;
+            SaveSnapshot();
             item.Conflict.ClearResolution();
             Refresh();
         };
         _choices.Children.Add(clear);
+        var takeAllRemote = new Button { Content = "全部未解决选 REMOTE", Name = "ChooseAllRemote" };
+        takeAllRemote.Click += (_, _) => ResolveAll(MergeChoice.Remote);
+        var takeAllLocal = new Button { Content = "全部未解决选 LOCAL", Name = "ChooseAllLocal" };
+        takeAllLocal.Click += (_, _) => ResolveAll(MergeChoice.Local);
+        var undo = new Button { Content = "撤销", Name = "Undo" };
+        undo.Click += (_, _) => Undo();
+        var redo = new Button { Content = "重做", Name = "Redo" };
+        redo.Click += (_, _) => Redo();
+        _choices.Children.Add(takeAllRemote);
+        _choices.Children.Add(takeAllLocal);
+        _choices.Children.Add(undo);
+        _choices.Children.Add(redo);
         _choices.Margin = new Thickness(0, 10);
         Add(root, _choices, 3);
         var previews = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*"), RowDefinitions = new RowDefinitions("*,*"), ColumnSpacing = 8, RowSpacing = 8 };
@@ -92,12 +122,15 @@ public sealed class MergeWindow : Window
         });
         _conflicts.SelectionChanged += (_, _) => UpdateDetail();
         _sheets.SelectionChanged += (_, _) => Refresh();
+        _filter.SelectionChanged += (_, _) => RefreshConflictList();
+        _search.TextChanged += (_, _) => RefreshConflictList();
         _reviewed.IsCheckedChanged += (_, _) => UpdateEnabled();
         _save.Click += async (_, _) => await SaveAsync();
         _cancel.Click += (_, _) => Close();
         Closing += (_, e) => e.Cancel = IsBusy;
         Closed += (_, _) => _session?.Dispose();
         Opened += async (_, _) => await LoadAsync();
+        KeyDown += OnKeyDown;
         UpdateEnabled();
     }
 
@@ -139,6 +172,7 @@ public sealed class MergeWindow : Window
     private void Resolve(MergeChoice choice)
     {
         if (SelectedConflict is not { } item || IsBusy) return;
+        SaveSnapshot();
         item.Conflict.Resolve(choice);
         _reviewed.IsChecked = false;
         Refresh();
@@ -148,22 +182,44 @@ public sealed class MergeWindow : Window
     {
         if (_session is null || _sheets.SelectedIndex < 0) return;
         var sheet = _session.Sheets[_sheets.SelectedIndex];
-        var selectedId = SelectedConflict?.Conflict.Id;
-        var items = sheet.Conflicts.Select(c => new ConflictItem(sheet.SheetName, c)).ToArray();
-        _conflicts.ItemsSource = items;
-        _conflicts.SelectedItem = items.FirstOrDefault(i => i.Conflict.Id == selectedId) ?? items.FirstOrDefault();
+        RefreshConflictList(sheet, SelectedConflict?.Conflict.Id);
         for (var i = 0; i < 4; i++)
         {
             var table = sheet.Comparison.CreateTable((MergeGridSide)i);
             var grid = _tables[i];
             grid.Columns.Clear();
-            grid.Columns.Add(new DataGridTextColumn { Header = "行", Binding = new Binding("RowHeader"), Width = new DataGridLength(65) });
+            grid.Columns.Add(new DataGridTemplateColumn
+            {
+                Header = "行",
+                Width = new DataGridLength(65),
+                CellTemplate = new FuncDataTemplate<MergeGridRow>((row, _) =>
+                    new TextBlock { Text = row?.RowHeader, Margin = new Thickness(4), FontWeight = FontWeight.SemiBold })
+            });
             for (var column = 0; column < table.ColumnHeaders.Count; column++)
-                grid.Columns.Add(new DataGridTextColumn
+            {
+                var columnIndex = column;
+                grid.Columns.Add(new DataGridTemplateColumn
                 {
-                    Header = table.ColumnHeaders[column], Binding = new Binding($"Cells[{column}].DisplayValue"),
-                    Width = new DataGridLength(150)
+                    Header = table.ColumnHeaders[columnIndex],
+                    Width = new DataGridLength(150),
+                    CellTemplate = new FuncDataTemplate<MergeGridRow>((row, _) =>
+                    {
+                        var cell = row?.Cells.ElementAtOrDefault(columnIndex);
+                        var text = new TextBlock
+                        {
+                            Text = cell?.DisplayValue,
+                            TextTrimming = TextTrimming.CharacterEllipsis
+                        };
+                        ToolTip.SetTip(text, cell?.ConflictId is null ? cell?.DisplayValue : $"冲突：{cell.ConflictId}");
+                        return new Border
+                        {
+                            Background = CellBackground(cell?.State ?? MergeGridCellState.Normal),
+                            Padding = new Thickness(4, 2),
+                            Child = text
+                        };
+                    })
                 });
+            }
             grid.ItemsSource = table.Rows;
         }
         _status.Text = $"{_session.OutputPath}\n共 {_session.Sheets.Count} 张表，未解决冲突 {_session.RemainingConflicts}/{_session.Conflicts.Count}。"
@@ -173,6 +229,104 @@ public sealed class MergeWindow : Window
         UpdateEnabled();
     }
 
+    private void RefreshConflictList(PreparedSheetMerge? sheet = null, string? selectedId = null)
+    {
+        if (_session is null || _sheets.SelectedIndex < 0) return;
+        sheet ??= _session.Sheets[_sheets.SelectedIndex];
+        selectedId ??= SelectedConflict?.Conflict.Id;
+        var filter = _filter.SelectedItem as string ?? "全部";
+        var search = _search.Text?.Trim() ?? string.Empty;
+        var items = sheet.Conflicts
+            .Where(c => filter switch
+            {
+                "未解决" => !c.IsResolved,
+                "已解决" => c.IsResolved,
+                _ => true
+            })
+            .Where(c => string.IsNullOrEmpty(search) ||
+                        c.Conflict.Message.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                        c.Id.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                        c.BaseValue.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                        c.LocalValue.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                        c.RemoteValue.Contains(search, StringComparison.OrdinalIgnoreCase))
+            .Select(c => new ConflictItem(sheet.SheetName, c))
+            .ToArray();
+        _conflicts.ItemsSource = items;
+        _conflicts.SelectedItem = items.FirstOrDefault(i => i.Conflict.Id == selectedId) ?? items.FirstOrDefault();
+    }
+
+    private void ResolveAll(MergeChoice choice)
+    {
+        if (_session is null || IsBusy) return;
+        var unresolved = _session.Conflicts.Where(c => !c.IsResolved).ToArray();
+        if (unresolved.Length == 0) return;
+        SaveSnapshot();
+        foreach (var conflict in unresolved)
+            conflict.Resolve(choice);
+        _reviewed.IsChecked = false;
+        Refresh();
+    }
+
+    private void SaveSnapshot()
+    {
+        if (_session is null || _restoringSnapshot) return;
+        _undo.Push(_session.Conflicts.ToDictionary(c => c.Id, c => c.SelectedChoice));
+        _redo.Clear();
+    }
+
+    private void RestoreSnapshot(IReadOnlyDictionary<string, MergeChoice?> snapshot)
+    {
+        if (_session is null) return;
+        _restoringSnapshot = true;
+        try
+        {
+            foreach (var conflict in _session.Conflicts)
+            {
+                conflict.ClearResolution();
+                if (snapshot.TryGetValue(conflict.Id, out var choice) && choice is { } selected)
+                    conflict.Resolve(selected);
+            }
+        }
+        finally { _restoringSnapshot = false; }
+        _reviewed.IsChecked = false;
+        Refresh();
+    }
+
+    private void Undo()
+    {
+        if (_session is null || IsBusy || _undo.Count == 0) return;
+        _redo.Push(_session.Conflicts.ToDictionary(c => c.Id, c => c.SelectedChoice));
+        RestoreSnapshot(_undo.Pop());
+    }
+
+    private void Redo()
+    {
+        if (_session is null || IsBusy || _redo.Count == 0) return;
+        _undo.Push(_session.Conflicts.ToDictionary(c => c.Id, c => c.SelectedChoice));
+        RestoreSnapshot(_redo.Pop());
+    }
+
+    private void NavigateConflict(int direction)
+    {
+        if (_conflicts.ItemCount == 0) return;
+        var next = _conflicts.SelectedIndex + direction;
+        if (next < 0) next = _conflicts.ItemCount - 1;
+        if (next >= _conflicts.ItemCount) next = 0;
+        _conflicts.SelectedIndex = next;
+        if (_conflicts.SelectedItem is { } selected)
+            _conflicts.ScrollIntoView(selected);
+    }
+
+    private async void OnKeyDown(object? sender, KeyEventArgs e)
+    {
+        var modifier = OperatingSystem.IsMacOS() ? KeyModifiers.Meta : KeyModifiers.Control;
+        if ((e.KeyModifiers & modifier) != modifier) return;
+        if (e.Key == Key.Z) { Undo(); e.Handled = true; }
+        else if (e.Key == Key.Y) { Redo(); e.Handled = true; }
+        else if (e.Key == Key.S) { await SaveAsync(); e.Handled = true; }
+        else if (e.Key == Key.F) { _search.Focus(); e.Handled = true; }
+    }
+
     private void UpdateDetail()
     {
         _detail.Text = SelectedConflict is { } item
@@ -180,6 +334,16 @@ public sealed class MergeWindow : Window
             : "本工作表没有冲突，请复核四表中的自动合并结果。";
         UpdateEnabled();
     }
+
+    private static IBrush CellBackground(MergeGridCellState state) => state switch
+    {
+        MergeGridCellState.Conflict => new SolidColorBrush(Color.Parse("#FFD9D6")),
+        MergeGridCellState.Added => new SolidColorBrush(Color.Parse("#DDF3E4")),
+        MergeGridCellState.Deleted => new SolidColorBrush(Color.Parse("#FFF0BF")),
+        MergeGridCellState.Metadata => new SolidColorBrush(Color.Parse("#FFE2B8")),
+        MergeGridCellState.Modified => new SolidColorBrush(Color.Parse("#E8F2FA")),
+        _ => Brushes.Transparent
+    };
 
     public async Task SaveAsync()
     {

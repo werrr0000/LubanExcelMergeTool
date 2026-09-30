@@ -60,6 +60,21 @@ try
         Check(before.SequenceEqual(File.ReadAllBytes(fixture.Output)), "cancel changed output");
         Check(Git(fixture.Root, "ls-files", "-u").Length > 0, "cancel cleared conflict");
     });
+    Run("UI supports filtering, batch resolution, undo and redo", () =>
+    {
+        var fixture = CreateFixture("navigation");
+        var window = Load(fixture.Args);
+        var filter = window.GetVisualDescendants().OfType<ComboBox>().Single(c => c.Items.Count == 3);
+        Check(window.Session!.RemainingConflicts == 1, "fixture conflict missing");
+        Click(window, "ChooseAllRemote");
+        Check(window.Session.RemainingConflicts == 0, "batch resolution failed");
+        filter.SelectedIndex = 2;
+        Check(window.GetVisualDescendants().OfType<ListBox>().Single().ItemCount == 1, "resolved filter failed");
+        Click(window, "Undo");
+        Check(window.Session.RemainingConflicts == 1, "undo failed");
+        Click(window, "Redo");
+        Check(window.Session.RemainingConflicts == 0, "redo failed");
+    });
     Run("save survives Fork deleting all input temporary files", () =>
     {
         var fixture = CreateFixture("deleted-inputs");
@@ -144,7 +159,7 @@ try
         Click(window, "ChooseRemote");
         Find<CheckBox>(window, "Reviewed").IsChecked = true;
         Check(!Find<Button>(window, "SaveMerge").IsEnabled, "other sheet conflict ignored");
-        window.GetVisualDescendants().OfType<ComboBox>().Single().SelectedIndex = 1;
+        window.GetVisualDescendants().OfType<ComboBox>().Single(c => c.Items.Count == 2).SelectedIndex = 1;
         Click(window, "ChooseLocal");
         Find<CheckBox>(window, "Reviewed").IsChecked = true;
         Pump(window.SaveAsync());
