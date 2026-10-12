@@ -1557,6 +1557,13 @@ static void ColumnModifyModifyConflictIsResolvable(string testRoot)
     var conflict = session.Conflicts.Single();
     Equal(Core.MergeConflictKind.MetadataChanged, conflict.Conflict.Kind);
     conflict.Resolve(MergeChoice.Remote);
+    Equal("bool", session.Comparison.CreateTable(MergeGridSide.Merged).Rows[2].Cells[3].DisplayValue);
+    Equal("int", session.Comparison.CreateTable(MergeGridSide.Local).Rows[2].Cells[3].DisplayValue);
+    conflict.Resolve(MergeChoice.Base);
+    Equal("string", session.Comparison.CreateTable(MergeGridSide.Merged).Rows[2].Cells[3].DisplayValue);
+    conflict.Resolve(MergeChoice.Local);
+    Equal("int", session.Comparison.CreateTable(MergeGridSide.Merged).Rows[2].Cells[3].DisplayValue);
+    conflict.Resolve(MergeChoice.Remote);
     session.Save();
     Equal("bool", ParseWorkbookSchema(scenario.OutputPath).FindField("B")!.TypeName);
 }

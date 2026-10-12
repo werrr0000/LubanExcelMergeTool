@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Xml.Linq;
 using Avalonia;
+using Avalonia.Input;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Headless;
@@ -49,6 +50,101 @@ Directory.CreateDirectory(root);
 var passed = 0;
 try
 {
+    Run("four actual grid viewports follow horizontal and vertical scrolling", () =>
+    {
+        var fixture = CreateFixture("scrolling");
+        foreach (var side in new[] { "base", "local", "remote" })
+        {
+            var path = Path.Combine(fixture.Root, "versions", side + ".xlsx");
+            File.Delete(path);
+            TestWorkbookFactory.Create(path, Enumerable.Range(1, 120)
+                .Select(i => new[] { i.ToString(), side, "value" }).ToArray());
+        }
+        var window = Load(fixture.Args);
+        window.Width = 1000;
+        window.UpdateLayout();
+        var grids = window.GetVisualDescendants().OfType<SynchronizedDataGrid>().ToArray();
+        Check(grids.Length == 4, "missing grids");
+        foreach (var grid in grids)
+        {
+            foreach (var column in grid.Columns) column.Width = new DataGridLength(200);
+        }
+        window.UpdateLayout();
+        foreach (var source in grids)
+        {
+            source.SetViewport(default);
+            // 从真实滚轮路由输入，不直接调用窗口同步函数。
+            using var pointer = new Pointer(Pointer.GetNextFreeId(), PointerType.Mouse, true);
+            source.RaiseEvent(new PointerWheelEventArgs(source, pointer, window, default, 0,
+                default, KeyModifiers.None, new Vector(-2, -3)));
+            window.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+            Check(source.Viewport.X > 0 && source.Viewport.Y > 0, "source did not scroll");
+            foreach (var target in grids)
+                Check(Math.Abs(target.Viewport.X - source.Viewport.X) < 1 &&
+                      Math.Abs(target.Viewport.Y - source.Viewport.Y) < 1, "viewport not synchronized");
+        }
+        window.Close();
+    });
+    Run("column header selects exact data column across grids without adjacent edits", () =>
+    {
+        var fixture = CreateFixture("column-selection");
+        foreach (var side in new[] { "base", "local", "remote" })
+        {
+            var path = Path.Combine(fixture.Root, "versions", side + ".xlsx");
+            File.Delete(path);
+            TestWorkbookFactory.Create(path, new[] { new[] { "1", side, side } });
+        }
+        var window = Load(fixture.Args);
+        window.UpdateLayout();
+        Check(window.Session!.RemainingConflicts == 2, "two field conflicts required");
+        // 可见 C 列是模型索引 2，不能使用带额外行号列的显示索引 3。
+        Click(window, "ColumnHeader0_2");
+        foreach (var index in Enumerable.Range(0, 4))
+            Check(Find<Button>(window, $"ColumnHeader{index}_2").Background == Avalonia.Media.Brushes.LightBlue,
+                "column selection not visible in all panes");
+        Click(window, "ChooseColumnLocal");
+        Check(window.Session.RemainingConflicts == 1, "selected adjacent column or no column");
+        Check(window.Session.Conflicts.Single(c => c.Conflict.FieldName == "A").SelectedChoice == MergeChoice.Local,
+            "field A not selected");
+        Check(!window.Session.Conflicts.Single(c => c.Conflict.FieldName == "B").IsResolved,
+            "adjacent field modified");
+        window.UpdateLayout();
+        Click(window, "ColumnHeader3_3");
+        Click(window, "ChooseColumnRemote");
+        Check(window.Session.RemainingConflicts == 0, "second column not resolved");
+        Click(window, "Undo");
+        Check(window.Session.RemainingConflicts == 1, "column resolution cannot undo");
+        Click(window, "Redo");
+        Find<CheckBox>(window, "Reviewed").IsChecked = true;
+        Pump(window.SaveAsync());
+        Check(window.ResultExitCode == 0, "column selection save failed");
+        Check(Cell(fixture.Output, "C4") == "local", "saved wrong C column");
+        Check(Cell(fixture.Output, "D4") == "remote", "saved wrong D column");
+    });
+    Run("type conflict REMOTE preview follows selection and undo", () =>
+    {
+        var fixture = CreateFixture("type-preview");
+        foreach (var side in new[] { "base", "local", "remote" })
+        {
+            var path = Path.Combine(fixture.Root, "versions", side + ".xlsx");
+            File.Delete(path);
+            TestWorkbookFactory.CreateWithSchema(path, ["Id", "A", "B"],
+                ["string", "string", side == "local" ? "int" : side == "remote" ? "bool" : "string"],
+                [["1", "same", "1"]]);
+        }
+        var window = Load(fixture.Args);
+        Check(window.Session!.RequiresStructuralChangeConfirmation, "missing structure confirmation");
+        Click(window, "ChooseRemote");
+        var grid = window.GetVisualDescendants().OfType<DataGrid>().Last();
+        string PreviewType() => grid.ItemsSource.Cast<MergeGridRow>().ElementAt(2).Cells[3].DisplayValue;
+        Check(PreviewType() == "bool", "MERGED type preview did not become bool");
+        Click(window, "Undo");
+        Check(PreviewType() == "int", "undo type preview failed");
+        Click(window, "Redo");
+        Check(PreviewType() == "bool", "redo type preview failed");
+        window.Close();
+    });
     Run("UI cancellation preserves workbook and unmerged index", () =>
     {
         var fixture = CreateFixture("cancel");

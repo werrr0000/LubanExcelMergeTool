@@ -1683,6 +1683,15 @@ public sealed class LubanMergeCoordinator
                 metadataCellConflicts[columnIndex] = conflict.Id;
                 conflict.SetGridLocation(rowIndex, columnIndex);
             }
+            // 字段结构选择同时决定字段名与类型；不能只将冲突绑定到 ##var 行。
+            if (rowNumber == schema.PrimaryVariableRowNumber || rowNumber == schema.TypeRowNumber)
+            {
+                foreach (var alignment in schemaMerge.Fields)
+                {
+                    if (alignment.StructureConflict is { } structureConflict)
+                        metadataCellConflicts[alignment.Target.ColumnIndex] = structureConflict.Id;
+                }
+            }
             rows.Add(new ComparisonRowPlan(
                 true,
                 $"structure:{rowNumber}",

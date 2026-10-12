@@ -5,6 +5,7 @@ using Avalonia.Data;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Input;
+using Avalonia.VisualTree;
 using LubanExcelMerge.Cli;
 using LubanExcelMerge.OpenXml;
 
@@ -22,7 +23,7 @@ public sealed class MergeWindow : Window
     private readonly CheckBox _reviewed = new() { Name = "Reviewed", Content = "我已复核自动合并结果、结构变化和主键推断提示" };
     private readonly Button _save = new() { Content = "保存并标记已解决", Name = "SaveMerge" };
     private readonly Button _cancel = new() { Content = "取消", Name = "CancelMerge" };
-    private readonly StackPanel _choices = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
+    private readonly WrapPanel _choices = new() { Orientation = Orientation.Horizontal };
     private readonly DataGrid[] _tables = new DataGrid[4];
     private MergeCommandOptions? _options;
     private PreparedMergeSession? _session;
@@ -31,6 +32,11 @@ public sealed class MergeWindow : Window
     private readonly Stack<IReadOnlyDictionary<string, MergeChoice?>> _undo = new();
     private readonly Stack<IReadOnlyDictionary<string, MergeChoice?>> _redo = new();
     private bool _restoringSnapshot;
+    private bool _syncingScroll;
+    private int _activeGridColumn = -1;
+    private readonly TextBlock _selectionHint = new() { Text = "点击列标题选择整列，再使用当前列按钮。" };
+    private readonly List<(Button Header, int Column)> _columnHeaders = new();
+    private int _activeGridRow = -1;
 
     public MergeWindow(string[] args)
     {
@@ -84,6 +90,15 @@ public sealed class MergeWindow : Window
         takeAllRemote.Click += (_, _) => ResolveAll(MergeChoice.Remote);
         var takeAllLocal = new Button { Content = "全部未解决选 LOCAL", Name = "ChooseAllLocal" };
         takeAllLocal.Click += (_, _) => ResolveAll(MergeChoice.Local);
+        foreach (var choice in Enum.GetValues<MergeChoice>())
+        {
+            var rowButton = new Button { Content = $"当前行选 {choice.ToString().ToUpperInvariant()}" };
+            rowButton.Click += (_, _) => ResolveGridScope(choice, columnOnly: false);
+            var columnButton = new Button { Content = $"当前列选 {choice.ToString().ToUpperInvariant()}", Name = $"ChooseColumn{choice}" };
+            columnButton.Click += (_, _) => ResolveGridScope(choice, columnOnly: true);
+            _choices.Children.Add(rowButton);
+            _choices.Children.Add(columnButton);
+        }
         var undo = new Button { Content = "撤销", Name = "Undo" };
         undo.Click += (_, _) => Undo();
         var redo = new Button { Content = "重做", Name = "Redo" };
@@ -101,7 +116,14 @@ public sealed class MergeWindow : Window
             var title = new TextBlock { Text = ((MergeGridSide)i).ToString().ToUpperInvariant(), FontWeight = FontWeight.Bold, Margin = new Thickness(0, 4) };
             DockPanel.SetDock(title, Dock.Top);
             panel.Children.Add(title);
-            _tables[i] = new DataGrid { IsReadOnly = true, AutoGenerateColumns = false, GridLinesVisibility = DataGridGridLinesVisibility.All };
+            _tables[i] = new SynchronizedDataGrid { IsReadOnly = true, AutoGenerateColumns = false, GridLinesVisibility = DataGridGridLinesVisibility.All, CanUserSortColumns = false, CanUserReorderColumns = false };
+            var gridIndex = i;
+            _tables[i].SelectionChanged += (_, _) =>
+            {
+
+                _activeGridRow = _tables[gridIndex].SelectedIndex;
+            };
+            ((SynchronizedDataGrid)_tables[i]).ViewportChanged += offset => SynchronizeViewport(gridIndex, offset);
             panel.Children.Add(_tables[i]);
             Grid.SetRow(panel, i / 2);
             Grid.SetColumn(panel, i % 2);
@@ -110,6 +132,7 @@ public sealed class MergeWindow : Window
         Add(root, previews, 4);
         var footer = new StackPanel { Spacing = 8, Margin = new Thickness(0, 12, 0, 0) };
         footer.Children.Add(new TextBlock { Text = "Mac 首版不调用 Office 重算：公式缓存可能过期，依赖公式的表请在 Excel/WPS 中重算保存后再导出。", TextWrapping = TextWrapping.Wrap });
+        footer.Children.Add(_selectionHint);
         footer.Children.Add(_reviewed);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         actions.Children.Add(_save);
@@ -121,7 +144,7 @@ public sealed class MergeWindow : Window
             Text = item?.ToString(), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(4)
         });
         _conflicts.SelectionChanged += (_, _) => UpdateDetail();
-        _sheets.SelectionChanged += (_, _) => Refresh();
+        _sheets.SelectionChanged += (_, _) => { _activeGridColumn = -1; _activeGridRow = -1; Refresh(); };
         _filter.SelectionChanged += (_, _) => RefreshConflictList();
         _search.TextChanged += (_, _) => RefreshConflictList();
         _reviewed.IsCheckedChanged += (_, _) => UpdateEnabled();
@@ -183,6 +206,7 @@ public sealed class MergeWindow : Window
         if (_session is null || _sheets.SelectedIndex < 0) return;
         var sheet = _session.Sheets[_sheets.SelectedIndex];
         RefreshConflictList(sheet, SelectedConflict?.Conflict.Id);
+        _columnHeaders.Clear();
         for (var i = 0; i < 4; i++)
         {
             var table = sheet.Comparison.CreateTable((MergeGridSide)i);
@@ -200,7 +224,7 @@ public sealed class MergeWindow : Window
                 var columnIndex = column;
                 grid.Columns.Add(new DataGridTemplateColumn
                 {
-                    Header = table.ColumnHeaders[columnIndex],
+                    Header = CreateColumnHeader(i, columnIndex, table.ColumnHeaders[columnIndex]),
                     Width = new DataGridLength(150),
                     CellTemplate = new FuncDataTemplate<MergeGridRow>((row, _) =>
                     {
@@ -265,6 +289,68 @@ public sealed class MergeWindow : Window
             conflict.Resolve(choice);
         _reviewed.IsChecked = false;
         Refresh();
+    }
+
+    private Button CreateColumnHeader(int grid, int column, string label)
+    {
+        var header = new Button
+        {
+            Name = $"ColumnHeader{grid}_{column}", Content = label,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(10, 4),
+            Background = column == _activeGridColumn ? Brushes.LightBlue : Brushes.Transparent
+        };
+        _columnHeaders.Add((header, column));
+        header.Click += (_, e) =>
+        {
+            if (IsBusy || ResultExitCode == ExitCodes.Success) return;
+            _activeGridColumn = column;
+            foreach (var item in _columnHeaders)
+                item.Header.Background = item.Column == column ? Brushes.LightBlue : Brushes.Transparent;
+            _selectionHint.Text = $"已选择整列 {label}（当前工作表）；当前列按钮仅处理该列关联的冲突，整行冲突会处理整条记录。";
+            e.Handled = true;
+        };
+        return header;
+    }
+
+    private void ResolveGridScope(MergeChoice choice, bool columnOnly)
+    {
+        if (_session is null || IsBusy || _sheets.SelectedIndex < 0) return;
+        var sheet = _session.Sheets[_sheets.SelectedIndex];
+        var table = sheet.Comparison.CreateTable(MergeGridSide.Merged);
+        var columnIndex = _activeGridColumn;
+        var ids = table.Rows
+            .Select((row, index) => (row, index))
+            .Where(item => columnOnly ? item.row.Cells.ElementAtOrDefault(columnIndex)?.ConflictId is not null
+                                      : item.index == _activeGridRow)
+            .SelectMany(item => columnOnly
+                ? new[] { item.row.Cells[columnIndex].ConflictId }
+                : item.row.Cells.Select(cell => cell.ConflictId))
+            .Where(id => id is not null)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (ids.Length == 0)
+        {
+            _selectionHint.Text = "当前范围没有冲突；请选择含冲突的列或行。";
+            return;
+        }
+        SaveSnapshot();
+        foreach (var conflict in _session.Conflicts.Where(c => ids.Contains(c.Id, StringComparer.Ordinal)))
+            conflict.Resolve(choice);
+        _reviewed.IsChecked = false;
+        Refresh();
+    }
+
+    private void SynchronizeViewport(int source, Vector offset)
+    {
+        if (_syncingScroll) return;
+        _syncingScroll = true;
+        try
+        {
+            for (var i = 0; i < _tables.Length; i++)
+                if (i != source) ((SynchronizedDataGrid)_tables[i]).SetViewport(offset);
+        }
+        finally { _syncingScroll = false; }
     }
 
     private void SaveSnapshot()
@@ -351,6 +437,12 @@ public sealed class MergeWindow : Window
         SetBusy(true, "正在保存、验证并暂存，请勿退出…");
         try
         {
+            if (_session.RequiresStructuralChangeConfirmation &&
+                !await ConfirmStructuralChangesAsync(_session.StructuralChanges))
+            {
+                SetBusy(false, "已取消保存，MERGED 未被修改。");
+                return;
+            }
             var completed = await Task.Run(() => MergeCompletion.Save(_session, _options.RepositoryRoot, stage: true));
             _diagnosticLogger?.WriteSaved(_session, completed.SaveResult, gitStaged: true);
             ResultExitCode = ExitCodes.Success;
@@ -374,6 +466,43 @@ public sealed class MergeWindow : Window
         finally { SetBusy(false); }
     }
 
+    private async Task<bool> ConfirmStructuralChangesAsync(IReadOnlyList<string> changes)
+    {
+        var dialog = new Window
+        {
+            Title = "确认保存结构变化",
+            Width = 620,
+            Height = 420,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+        var content = new StackPanel { Margin = new Thickness(20), Spacing = 12 };
+        content.Children.Add(new TextBlock
+        {
+            Text = "本次合并包含字段列删除、修改或移动，可能影响公式引用和下游 Luban 配置。请确认后继续保存。",
+            TextWrapping = TextWrapping.Wrap
+        });
+        content.Children.Add(new ScrollViewer
+        {
+            Height = 250,
+            Content = new TextBlock
+            {
+                Text = string.Join(Environment.NewLine, changes.Take(30).Select(change => "• " + change)),
+                TextWrapping = TextWrapping.Wrap
+            }
+        });
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8 };
+        var cancel = new Button { Content = "取消", IsCancel = true };
+        var confirm = new Button { Content = "确认保存", IsDefault = true };
+        cancel.Click += (_, _) => dialog.Close(false);
+        confirm.Click += (_, _) => dialog.Close(true);
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(confirm);
+        content.Children.Add(buttons);
+        dialog.Content = content;
+        return await dialog.ShowDialog<bool>(this);
+    }
+
     private void ReportError(Exception exception)
     {
         ResultExitCode = ExitCodes.ForException(exception);
@@ -395,7 +524,7 @@ public sealed class MergeWindow : Window
         _sheets.IsEnabled = !IsBusy && ResultExitCode != ExitCodes.Success;
         _reviewed.IsEnabled = !IsBusy && ResultExitCode != ExitCodes.Success;
         _conflicts.IsEnabled = !IsBusy;
-        _choices.IsEnabled = !IsBusy && ResultExitCode != ExitCodes.Success && SelectedConflict is not null;
+        _choices.IsEnabled = !IsBusy && ResultExitCode != ExitCodes.Success && _session is not null;
     }
 
     private static void Add(Grid grid, Control child, int row)
