@@ -7,6 +7,10 @@ var tests = new (string Name, Action Run)[]
     ("identical cell change", IdenticalCellChange),
     ("different cell change conflicts", DifferentCellChangeConflicts),
     ("numeric representations compare equal", NumericRepresentationsCompareEqual),
+    ("Excel serialization tails do not conflict with a real edit", ExcelNumericTails),
+    ("meaningful numeric changes and long integer IDs remain distinct", NumericChangesRemainDistinct),
+    ("numeric comparison never rewrites a source payload", NumericPayloadsRemainOriginal),
+    ("small and large exponent differences remain visible", NumericExponentDifferences),
     ("formula text takes precedence over cache", FormulaTextTakesPrecedence),
     ("different fields merge automatically", DifferentFieldsMerge),
     ("LOCAL-only record addition", LocalOnlyAddition),
@@ -91,6 +95,40 @@ static void FormulaTextTakesPrecedence()
 {
     True(!Formula("A1+B1", "10").ContentEquals(Formula("A1+C1", "10")));
     True(Formula("A1+B1", "10").ContentEquals(Formula("A1+B1", "11")));
+}
+
+static void ExcelNumericTails()
+{
+    var result = CellThreeWayMerger.Merge(Number("2.4647700000000001"), Number("4.1079499999999998"), Number("2.46477"), "1", "Damage");
+    Equal(MergeDecisionKind.TakeLocal, result.Kind);
+    True(Number("1.1111111111111101").ContentEquals(Number("1.11111111111111")));
+    True(!Text("2.4647700000000001").ContentEquals(Text("2.46477")));
+}
+
+static void NumericChangesRemainDistinct()
+{
+    True(!Number("1.23456789012345").ContentEquals(Number("1.23456789012346")));
+    True(!Number("9007199254740992").ContentEquals(Number("9007199254740993")));
+    True(!Number("0").ContentEquals(Number("1e-16")));
+    True(!Number("1e-6").ContentEquals(Number("1.1e-6")));
+    True(!Formula("1.1111111111111101", "1").ContentEquals(Formula("1.11111111111111", "1")));
+}
+
+static void NumericPayloadsRemainOriginal()
+{
+    const string original = "4.1079499999999998";
+    var result = CellThreeWayMerger.Merge(Number("2.4647700000000001"), Number(original), Number("2.46477"), "1", "Damage");
+    Equal(original, result.Result!.RawValue);
+}
+
+static void NumericExponentDifferences()
+{
+    True(!Number("1e-100").ContentEquals(Number("2e-100")));
+    True(!Number("0").ContentEquals(Number("1e-100")));
+    True(!Number("1e100").ContentEquals(Number("2e100")));
+    True(Number("2.4647700000000001e-100").ContentEquals(Number("2.46477e-100")));
+    True(!Number("NaN").ContentEquals(Number("NaN")));
+    True(!Number("Infinity").ContentEquals(Number("Infinity")));
 }
 
 static void DifferentFieldsMerge()

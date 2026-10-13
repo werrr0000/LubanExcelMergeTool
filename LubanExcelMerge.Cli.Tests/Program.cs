@@ -79,6 +79,11 @@ try
     var tests = new List<(string Name, Action Run)>
     {
         ("legacy XML, column layout, header gaps and auxiliary sheet regressions", () => CompatibilityRegressionTests.Run(testRoot)),
+        ("ordinary Id headers preserve columns and both branch changes", () => RemainingTableRegressionTests.PlainHeaders(testRoot)),
+        ("ordinary headers reject duplicate keys and changed layouts", () => RemainingTableRegressionTests.UnsafePlainHeaders(testRoot)),
+        ("auxiliary content requires review and supports undo and source choice", () => RemainingTableRegressionTests.AuxiliaryReview(testRoot)),
+        ("auxiliary layout remains LOCAL and blocks unattended save", () => RemainingTableRegressionTests.AuxiliaryLayout(testRoot)),
+        ("Git LFS conflict text produces an actionable input error", () => RemainingTableRegressionTests.LfsConflictText(testRoot)),
         ("command line requires four files and repository", CommandLineRequiresInputs),
         ("command line accepts Fork arguments without merge subcommand", CommandLineAcceptsForkArgumentsWithoutSubcommand),
         ("command line still rejects unknown subcommands", CommandLineRejectsUnknownSubcommands),

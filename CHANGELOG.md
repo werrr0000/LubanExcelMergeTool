@@ -17,6 +17,13 @@
 
 ## Unreleased
 
+### Compatibility
+
+- 支持三方布局一致且 Id 非空唯一的普通英文字段行，不改变原表行列位置。
+- 辅助页变化进入固定单元格复核，纯布局和样式差异在 GUI 确认后保留 LOCAL，命令行拒绝未确认的辅助页保存。
+- 数字单元格按 15 位有效数字比较序列化尾差，保留原值及精确整数、文本和公式差异；极小数值不会因 decimal 下溢误判为相等。
+- Git LFS 冲突文本输入给出具体恢复说明。详见 docs/Remaining-Table-Compatibility.zh-CN.md。
+
 ### Added
 
 - 支持 Luban `mode=one` 单例逻辑表：BASE、LOCAL、REMOTE 各含一条记录时按字段执行三方合并，兼容修改自动合并，字段冲突进入现有复核流程。

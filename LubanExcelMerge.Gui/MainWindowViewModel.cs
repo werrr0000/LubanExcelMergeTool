@@ -257,7 +257,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
             var analysisStatus = session.MetadataChangeCount > 0
                 ? $"检测到 {session.MetadataChangeCount} 处 Luban 元数据变更，请逐项确认后保存"
                 : session.RequiresStructuralChangeConfirmation
-                ? $"检测到 {session.StructuralChanges.Count} 项列结构变化，保存前需要二次确认"
+                ? $"检测到 {session.StructuralChanges.Count} 项布局或辅助页复核提示，保存前需要确认"
                 : session.Conflicts.Count == 0
                 ? $"分析完成：{session.Sheets.Count} 个工作表，{session.AutomaticMergeCount} 项自动合并结果，可直接保存"
                 : $"分析完成：{session.Sheets.Count} 个工作表，{session.Conflicts.Count} 个冲突待处理";
@@ -687,14 +687,14 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         if (changes.Count > displayedChanges.Count)
             displayedChanges.Add($"• 另有 {changes.Count - displayedChanges.Count} 项未展开");
         var message =
-            "本次保存将删除、修改或移动既有字段列。列结构变化可能影响公式引用和下游 Luban 配置。" +
+            "请确认以下字段列变化及辅助页保留规则。字段列变化可能影响公式引用；辅助页布局按所列规则保留。" +
             Environment.NewLine + Environment.NewLine +
             string.Join(Environment.NewLine, displayedChanges) +
             Environment.NewLine + Environment.NewLine +
             "是否确认继续保存并执行后续校验与 Git staging？";
         return MessageBox.Show(
             message,
-            "确认保存列结构变更",
+            "确认保存布局与辅助页复核",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning,
             MessageBoxResult.No) == MessageBoxResult.Yes;

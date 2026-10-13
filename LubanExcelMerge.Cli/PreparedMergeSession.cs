@@ -108,6 +108,7 @@ public sealed class PreparedSheetMerge
     }
 
     public string SheetName { get; }
+    public bool UsesFixedCellReview { get; init; }
     public string KeyName { get; }
     public IReadOnlyList<ResolvableMergeConflict> Conflicts { get; }
     public MergeComparison Comparison { get; }
@@ -252,7 +253,8 @@ public sealed class PreparedMergeSession
         var mergeEdits = Sheets.SelectMany(sheet => sheet.GetSelectedEdits()).ToArray();
         var formulaMayBeAffected = mergeEdits.Length > 0 &&
             (_localFormulaCount > 0 || mergeEdits.Any(ContainsFormula));
-        var cleanupEdits = Sheets.Select(sheet => (WorkbookEdit)new CleanupEmptyFormattingEdit(sheet.SheetName));
+        var cleanupEdits = Sheets.Where(sheet => !sheet.UsesFixedCellReview)
+            .Select(sheet => (WorkbookEdit)new CleanupEmptyFormattingEdit(sheet.SheetName));
         var edits = cleanupEdits
             .Concat(mergeEdits)
             .Concat(cleanupEdits)

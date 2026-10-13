@@ -56,6 +56,8 @@ public sealed partial class LubanMergeCoordinator
     public MergeRunResult Merge(MergeCommandOptions options)
     {
         var session = Prepare(options);
+        if (session.Sheets.Any(sheet => sheet.UsesFixedCellReview && sheet.RequiresStructuralChangeConfirmation))
+            throw new UnsafeWorkbookException("辅助页的布局、样式或内容差异需要在 GUI 中复核并确认保留 LOCAL 布局，不能直接在命令行保存。");
         if (!session.CanSave)
         {
             return new MergeRunResult(
@@ -184,7 +186,11 @@ public sealed partial class LubanMergeCoordinator
             throw new UnsafeWorkbookException(
                 "多工作表工作簿暂不支持全逻辑表唯一性扫描；请关闭 validateLogicalTableUniqueness 后逐工作表合并。");
         }
-        var preparedSheets = sheetSets.Select(sheets => PrepareSheet(
+        var preparedSheets = sheetSets.Select(sheets =>
+            !HasSchemaMarker(sheets.Base) && !HasSchemaMarker(sheets.Local) && !HasSchemaMarker(sheets.Remote) &&
+            !TryParsePlainSchemas(sheets, out _)
+            ? PrepareAuxiliarySheet(sheets, baseWorkbook, localWorkbook, remoteWorkbook)
+            : PrepareSheet(
             sheets,
             basePath,
             localPath,
@@ -256,7 +262,10 @@ public sealed partial class LubanMergeCoordinator
             var columnLayout = IsColumnLayout(sheets.Base) || IsColumnLayout(sheets.Local) || IsColumnLayout(sheets.Remote);
             if (columnLayout && (configuredKey is not null || ignoredFields.Count > 0 || options.ValidateLogicalTableUniqueness))
                 throw new UnsafeWorkbookException("纵向表按字段名合并，暂不支持 keyOverrides、ignoredFields 或跨文件唯一性扫描。");
-            var schemas = columnLayout
+            var plainLayout = TryParsePlainSchemas(sheets, out var plainSchemas);
+            var schemas = plainLayout
+                ? plainSchemas
+                : columnLayout
                 ? ParseColumnSchemas(sheets.Base, sheets.Local, sheets.Remote)
                 : ParseSchemas(sheets.Base, sheets.Local, sheets.Remote, metadata, logicalTable);
             var schemaMerge = CreateSchemaMergePlan(schemas, sheets);
@@ -294,7 +303,9 @@ public sealed partial class LubanMergeCoordinator
             else
             {
                 var declaredIndexes = logicalTable.DeclaredIndexes;
-                if (!columnLayout && !logicalTable.ReadSchemaFromFile && declaredIndexes.Count == 0 && configuredKey is null)
+                if (plainLayout && declaredIndexes.Count == 0 && configuredKey is null)
+                    declaredIndexes = new[] { new RecordKeyDefinition(new[] { schemas.Local.Fields.Single(field => field.Name is "Id" or "id").Name }) };
+                if (!columnLayout && !plainLayout && !logicalTable.ReadSchemaFromFile && declaredIndexes.Count == 0 && configuredKey is null)
                 {
                     var xmlFields = XmlBeanCatalog.Load(Path.Combine(Path.GetDirectoryName(metadata.DataRoot)!, "Defines")).Resolve(logicalTable);
                     declaredIndexes = new[] { new RecordKeyDefinition(new[] { xmlFields[0].Name }) };
@@ -711,13 +722,14 @@ public sealed partial class LubanMergeCoordinator
                 dataSheets.Add((baseSheet, localSheet, remoteSheet));
                 continue;
             }
-            // Never silently discard edits to a sheet whose record identity is unknown.
-            if (!SheetContentEquals(baseSheet, localSheet) || !SheetContentEquals(baseSheet, remoteSheet) ||
+            if (TryParsePlainSchemas((baseSheet, localSheet, remoteSheet), out _) ||
+                !SheetContentEquals(baseSheet, localSheet) || !SheetContentEquals(baseSheet, remoteSheet) ||
                 !AuxiliaryPartsEqual(@base, baseSheet, local, localSheet) || !AuxiliaryPartsEqual(@base, baseSheet, remote, remoteSheet))
-                throw new UnsafeWorkbookException($"辅助工作表 {localSheet.Name} 没有 Luban 字段标记且内容或格式发生变化，无法按主键安全合并。请先单独处理该页的变化。");
+                dataSheets.Add((baseSheet, localSheet, remoteSheet));
         }
-        if (dataSheets.Count == 0)
-            throw new UnsafeWorkbookException("工作簿没有可识别的 Luban 数据工作表（##var 或 ##column##var）。");
+        if (!sets.Any(sheets => HasSchemaMarker(sheets.Item1) || HasSchemaMarker(sheets.Item2) || HasSchemaMarker(sheets.Item3) ||
+                TryParsePlainSchemas(sheets, out _)))
+            throw new UnsafeWorkbookException("工作簿没有可识别的 Luban 数据工作表或具有唯一 Id 字段的普通表头。");
         return dataSheets;
     }
 

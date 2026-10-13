@@ -16,6 +16,13 @@ public sealed class GitLfsInputResolver
     public ResolvedInput Resolve(string inputPath, string repositoryRoot)
     {
         var absoluteInput = Path.GetFullPath(inputPath);
+        if (new FileInfo(absoluteInput).Length <= 4096)
+        {
+            var prefix = System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(absoluteInput));
+            if (prefix.StartsWith("version https://git-lfs.github.com/spec/v1", StringComparison.Ordinal) &&
+                prefix.Contains("<<<<<<<", StringComparison.Ordinal) && prefix.Contains(">>>>>>>", StringComparison.Ordinal))
+                throw new InvalidDataException("输入文件是尚未解决的 Git LFS 冲突文本，不是 Excel 工作簿。请使用 Git/Fork 提供的 BASE、LOCAL、REMOTE 三方文件进行合并，完成保存前不能用 Excel 打开工作区的冲突文件。");
+        }
         var pointer = GitLfsPointer.TryRead(absoluteInput);
         if (pointer is null)
             return new ResolvedInput(absoluteInput, absoluteInput, false);

@@ -86,7 +86,9 @@ internal static class CompatibilityRegressionTests
         session.Save();
         Assert(new OpenXmlWorkbookReader().Read(fixture.OutputPath).GetSheet("Notes").GetCell("B1")!.Payload.RawValue == "不可丢失", "auxiliary sheet preserved");
         ReplaceSheet(fixture.RemotePath, new[] { new[] { "说明", "远端修改" } }, "xl/worksheets/sheet2.xml");
-        Reject(() => new LubanMergeCoordinator().Prepare(fixture), "changed auxiliary sheet must not be discarded");
+        var changed = new LubanMergeCoordinator().Prepare(fixture);
+        Assert(!changed.CanSave && changed.Sheets.Single(sheet => sheet.SheetName == "Notes").Conflicts.Count == 1,
+            "changed auxiliary sheet must require explicit review rather than be discarded");
     }
 
     private static MergeCommandOptions Create(string root, string name, string mode, bool external = false)
